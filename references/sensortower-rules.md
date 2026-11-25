@@ -6,7 +6,7 @@
 
 ## 一、角色定位与统计口径
 
-1. **唯一量化主源**：市场大盘、五个研究品类、Top10 主榜、下载增补位、新品序列、近 3 月环比、近 3 月绝对增量、近似 RPD 与 CR10，全部来自 ST MCP，并经 `research_tools.py market` 核算后通过 `[[metric]]` 绑定。
+1. **唯一量化主源**：市场大盘、四个研究品类（合成、三消、混变益智、模拟经营）、Top10 主榜、下载增补位、新品序列、近 3 月环比、近 3 月绝对增量、近似 RPD 与 CR10，全部来自 ST MCP，并经 `research_tools.py market` 核算后通过 `[[metric]]` 绑定。
 2. **全球统一口径**：所有大盘、榜单与单品序列默认传 `os: "unified"`、`regions: []`（全球 iOS + Google Play 合并估算，**包含中国大陆 iOS**，不含中国大陆第三方安卓商店与小游戏）。对纯中国大陆 iOS 集中的产品，不做地区倒减，在产品卡 `<details>` 展开层附注地区属性。
 3. **收入与下载定义**：
    - `revenue` / `revenue_usd` / `revenueInUsdAbsolute`：单位 USD，保留 2 位小数，口径为 **IAP 净收入估算（`revenue_basis: "iap_net"`，已扣除平台渠道分成，不含广告变现 IAA 与站外网页支付）**。
@@ -23,7 +23,7 @@
 | `sensortower-list-help-sections` | 新会话/子代理权限探针 | `{}` | 最小只读探针；正常返回帮助分区列表即确认 ST 权限可用 |
 | `sensortower-get-app-market-size` | 宏观大盘与品类 6 个月月度序列 | `breakdown`（`game_product_model` / `game_sub_genre`）、`metric`（`revenue` / `downloads`）、`start_date`、`end_date`、`date_granularity: "month"`、`os: "unified"`、`regions: []`、`custom_fields` | 设了 `date_granularity` 时 `limit` 参数会被接口忽略；单次调用只取一个 `metric` |
 | `sensortower-get-top-apps` | 品类收入主榜、下载增补榜、新品初筛榜 | `metric`（`revenue` / `downloads`）、`os: "unified"`、`start_date`、`end_date`、`limit`（1–1000，常规用 20）、`include_app_details: true`、`custom_fields` | 开启 `include_app_details: true` **不触发 7012 报错**，直接返回 `unified_publisher_name`、`ios_app_ids`、`android_app_ids`；`total_count` 为分页前命中数，不等同于商店在架总数 |
-| `sensortower-get-app-performance-metrics` | 全部入围产品的 6 个月月度收入与下载序列 | `unified_app_ids`（每次 ≤100 个 24 位 hex）、`metric`（`revenue` 或 `downloads`）、`start_date`、`end_date`、`os: "unified"`、`date_granularity: "month"` | 勿与 `app_ids` 同时传入（同时传时 `app_ids` 会覆盖 `unified_app_ids`）；产品上线前月份返回空数组属于有效零值，不判定为缺数 |
+| `sensortower-get-app-performance-metrics` | 入围产品与新品候选的月度收入与下载序列、新品首发核验日序列 | `unified_app_ids`（每次 ≤100 个 24 位 hex）、`metric`（`revenue` 或 `downloads`）、`start_date`、`end_date`、`os: "unified"`、`date_granularity: "month"` 或 `"day"` | 日粒度查询起点必须严格早于 `cutoff_date`。勿与 `app_ids` 同时传入（同时传时 `app_ids` 会覆盖 `unified_app_ids`）；产品上线前月份返回空数组属于有效零值，不判定为缺数 |
 | `sensortower-get-sub-app-details` | 边缘产品的 Game IQ 标签精准核查 | `app_id`（美区 iOS 数字 ID）、`country: "US"` | 唯一通过实测的应用详情替代接口；直接读 `game_intel_data.genre.name`、`sub_genre.name`、`product_model.name`；仅反映查询时美国 iOS 主包标签，勿与全地区或历史标签混谈 |
 | `sensortower-search-entities` | 单品特例与外部新游线索反查统一 ID | `entity_type: "app"`、`os: "unified"`、`countries: []`、`limit: 2–5`、`terms: [...]` | 因主榜已直开 `include_app_details: true`，本工具**仅用于白名单特例（如 `Match Factory!`）和第三方新游补漏产品**，不再对主榜逐批调用 |
 | `sensortower-get-app-reviews-text` | 打标用玩家评论原文样本 | iOS：`os: "ios", app_id: "<ios_id>", regions: ["US"], languages: []`；Android：`os: "android", app_id: "<pkg>", regions: [], languages: ["en"]`；`start_date`、`end_date`、`limit: 30`、`page: 1`、`sort_by: "date"`、`sort_order: "desc"` | **绝不在同一次调用里混用 iOS `regions` 与 Android `languages`**；单页上限 200；查询超过约 93 天前的旧评论可能触发 HTTP 403，优先查近 60–90 天 |
@@ -50,7 +50,7 @@
 ### 4.1 多字段 AND 与正交维度
 - `custom_fields` 传入多个对象时按逻辑 **AND** 生效（例如 `Game Product Model = Hybridcasual` AND `Game Genre = Puzzle`，或 `Simulation` 下的 4 子类白名单 AND `Casual/Hybridcasual`）。
 - 〔待核〕`custom_fields` 中 `exclude: true` 在当前工作区尚未单独实测；涉及需要排除传统益智子类时，先在 `full` 模式首轮跑 1 次只读 `game_sub_genre` 分解，再确认是否走 `exclude: true`，未确认前一律由 `data_pipeline.py` 做后置精确过滤。
-- **正交维度禁加总**：`Game Product Model = Hybridcasual` 与玩法子类（`Match Merge 2/3`、`Match Swap`、`Simulation` 四子类）维度正交，允许跨列重叠产品按 `cross_category_priority` 去重归列，**绝不可将混变益智与前四类相加求和大盘**。
+- **正交维度禁加总**：`Game Product Model = Hybridcasual` 与玩法子类（`Match Merge 2/3`、`Match Swap`、`Simulation` 四子类）维度正交，允许跨列重叠产品按 `cross_category_priority` 去重归列，**绝不可将混变益智与其余三类玩法品类（合成、三消、模拟经营）相加求和大盘**。
 
 ### 4.2 新品初筛硬组合
 - 强制组合三项参数，缺一不可：
@@ -58,15 +58,15 @@
   2. `unified_app_primary_categories: ["6014"]`（锁死 Games 主类，防止非游戏应用混入）；
   3. `custom_fields_include_unified_apps: false`（防止老产品新挂子包冒充首发）。
 - **禁止使用 `Released Days Ago (WW)`**（经实测为 9 个无精确边界的粗时间桶，与自然月不对齐），也不要将 `Earliest Release Date` 与 `Release Date (WW)` 混用。
-- ST 初筛出池后，仍必须用商店最早发行日二次核查，剔除换皮重发或主机/PC 老 IP 移植作品。
+- ST 初筛后，以全球收入或下载日序列核验 `effective_launch_date`，并保留单商店发行日 `publisher_start` 作参照。剔除换皮重发或主机、PC 老 IP 移植作品。
 
-### 4.3 衍生指标与「合成合计」预聚合
+### 4.3 衍生指标与合成双子类合并
 - `market_calculations.py` 与 `report_values.py` 原生计算四类指标，均不增加额外 ST API 调用：
   - **近 3 月环比**：`operation: "percent_change"`（后 3 月 `sum` 对比前 3 月 `sum`）；
   - **近 3 月绝对增量**：`operation: "contribution"`（产出 `contribution_market` 与各产品 `contribution_delta`，避免小基数新品只看百分比失真）；
   - **近似 RPD**：`operation: "ratio"`（同产品 6 月净收入 ÷ 6 月下载，图注与附录明示「非同期群 LTV」）；
   - **CR10**：`operation: "concentration"`（仅纳自动标签池 Top10 为分子、自动池大盘为分母，**严格排除白名单特例与下载增补位**）。
-- **合成合计（`merge_combined`）规则**：基座 `report_values.py` 的 `sum` 限制所有输入必须为同一 `entity_id`；因此由 `data_pipeline.py` 将 ST `Match Merge 2` 与 `Match Merge 3` 同口径月度值预聚合为独立品类 `entity_id: "merge_combined"`，完整保留两侧 `evidence_ids` 与非原生总类声明，再输入 `research_tools.py market`。
+- **合成大盘**。`data_pipeline.py` 将 ST `Match Merge 2` 与 `Match Merge 3` 按相同口径同月合并为 `merge`，在 `subgenre_breakdown_audit.merge` 保留拆分月值与期间合计，再输入 `research_tools.py market`。
 
 ---
 
@@ -89,7 +89,7 @@
 
 ```json
 {
-  "st_mkt_merge2_rev": {
+  "st_mkt_merge_rev": {
     "provider": "Sensor Tower",
     "params": {
       "breakdown": "game_sub_genre",
@@ -99,12 +99,12 @@
       "start_date": "2026-05-01",
       "end_date": "2026-10-31",
       "date_granularity": "month",
-      "game_sub_genre": ["Match Merge 2"]
+      "game_sub_genre": ["Match Merge 2", "Match Merge 3"]
     },
     "observation_scope": "全球（iOS + Google Play，含中国大陆 iOS）月度 IAP 净收入估算",
     "retrieved_at": "2026-11-24",
     "status": "ok",
-    "raw_file": "research/raw/st_market_merge_2_rev.json"
+    "raw_file": "research/raw/st_market_merge_rev.json"
   }
 }
 ```

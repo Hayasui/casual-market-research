@@ -156,14 +156,22 @@
       "cast",
       "actors",
       "release_date",
-      "release_year",
+      "air_date",
+      "premiere_date",
       "target_audience",
       "演员",
       "主演",
       "上映时间",
-      "上映年份",
+      "上映日期",
+      "首播日期",
       "目标受众",
       "受众人群"
-    ]
+    ],
+    "require_release_year": true,
+    "release_year_range": [
+      1900,
+      2100
+    ],
+    "title_render_format": "《{title_zh}》（{release_year}） <i>{title_orig}</i>"
   }
 }

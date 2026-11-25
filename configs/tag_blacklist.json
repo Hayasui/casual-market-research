@@ -46,7 +46,7 @@
         "min": 1,
         "max": 1,
         "badge_color_role": "presentation",
-        "guidance": "只记录商店核心截图可指认的画风与渲染形态，例如治愈手绘、欧美Q版3D、写实厨房质感、极简立体几何。"
+        "guidance": "只记录商店实机棋盘与主场景截图可指认的呈现风格，按「人物与物体比例、渲染质感与光影、色彩饱和度、空间立体度」四特征锚定，例如欧美3D预渲染、欧美卡通手绘、欧美半写实插画、写实食物质感、治愈厚涂手绘、极简立体几何。"
       },
       "fusion_secondary": {
         "label_zh": "副题材或玩法融合",
@@ -56,6 +56,37 @@
         "badge_color_role": "fusion",
         "guidance": "副题材或融合玩法有独立操作或进度时才填写，例如家园装修、商业经营、角色换装。"
       }
+    }
+  },
+  "narrative_intensity": {
+    "label_zh": "叙事强度",
+    "required": true,
+    "counts_toward_final_tags": false,
+    "controlled_enum": [
+      "重剧情",
+      "轻剧情",
+      "无剧情"
+    ],
+    "motif_linkage": {
+      "无剧情": "must_be_null",
+      "轻剧情": "optional",
+      "重剧情": "must_be_non_null"
+    },
+    "evidence_policy": {
+      "high_reliability_types": [
+        "store_screenshot",
+        "st_review",
+        "web_wiki_review"
+      ],
+      "moderate_reliability_types": [
+        "store_desc"
+      ],
+      "forbidden_sole_types": [
+        "ad_creative"
+      ],
+      "min_evidence_for_story": 2,
+      "min_high_reliability_for_story": 1,
+      "min_evidence_for_none": 1
     }
   },
   "narrative_motif": {
@@ -97,7 +128,20 @@
       "3D",
       "卡通",
       "手绘",
-      "立绘"
+      "立绘",
+      "剧情",
+      "抉择",
+      "故事",
+      "悬疑",
+      "八卦",
+      "复仇",
+      "分支",
+      "线索",
+      "情感",
+      "story",
+      "narrative",
+      "choice",
+      "drama"
     ]
   },
   "evidence_rules": {
@@ -284,8 +328,9 @@
       "blind_sample_size": 5,
       "blind_sample_stratification": "1头部强剧情 + 2题材易混/脏标签样本 + 2近12月首发新品或低置信样本",
       "theme_primary_agreement_min": 0.80,
+      "presentation_agreement_min": 0.80,
       "tag_set_overlap_min": 0.75,
-      "overlap_formula": "|A ∩ B| / min(|A|, |B|)",
+      "overlap_formula": "|A ∩ B| / |A ∪ B|",
       "max_unresolved_low_confidence": 0,
       "emerging_singleton_allowed_for_new_releases": true,
       "signoff_method": "dialogue_table_approval",
@@ -294,12 +339,13 @@
     "full": {
       "vocab_min": 25,
       "vocab_max": 40,
-      "blind_sample_size": 15,
+      "blind_sample_size": 12,
       "blind_sample_per_subgenre": 3,
-      "blind_sample_stratification": "每品类 3 款：1 头部老品 + 1 跨题材易混品 + 1 新品或低置信样本",
+      "blind_sample_stratification": "每品类 3 个：1 头部老品 + 1 跨题材易混品 + 1 新品或低置信样本",
       "theme_primary_agreement_min": 0.80,
+      "presentation_agreement_min": 0.80,
       "tag_set_overlap_min": 0.75,
-      "overlap_formula": "|A ∩ B| / min(|A|, |B|)",
+      "overlap_formula": "|A ∩ B| / |A ∪ B|",
       "max_unresolved_low_confidence": 0,
       "emerging_singleton_allowed_for_new_releases": true,
       "freeze_existing_pilot_tag_ids_on_expand": true,
@@ -316,7 +362,10 @@
       "pass2_rationale",
       "st_game_iq_theme",
       "st_game_iq_art_style",
-      "st_game_iq_tags"
+      "st_game_iq_tags",
+      "narrative_intensity",
+      "narrative_motif",
+      "narrative_evidence"
     ],
     "require_falsification_first_prompt": true,
     "falsification_instruction": "对每款抽检产品，先找出 2 个最易混淆、必须排除的近义受控词并给出原文或截图反证，再锁定剩余的 2–3 个受控 Tag。"

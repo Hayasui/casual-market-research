@@ -277,6 +277,7 @@ def assemble(source, inputs, *, base_dir=".", script_mode="zero_js"):
     numbers = {eid: n for n, eid in enumerate(sources, 1)}
     cited, used = set(), {}
     bound = 0
+    chart_num = 0
 
     def citations(ids):
         if not isinstance(ids, list) or not ids:
@@ -296,7 +297,7 @@ def assemble(source, inputs, *, base_dir=".", script_mode="zero_js"):
         return " ".join(f'<a class="source-ref" href="#src-{E(e)}">[{numbers[e]:02d}]</a>' for e in ids)
 
     def expand(match):
-        nonlocal bound
+        nonlocal bound, chart_num
         kind, arg = match.groups()
         if kind == "style" and arg is None:
             return STYLE
@@ -372,13 +373,22 @@ def assemble(source, inputs, *, base_dir=".", script_mode="zero_js"):
             raise ValueError("colliding report asset filename: " + name)
         used[name] = item
         caption = record.get("caption", "")
-        title = record.get("title", "")
+        title = str(record.get("title") or "")
+        if kind == "chart":
+            chart_num += 1
+            if not re.match(r"^图\s*\d+", title):
+                title = f"图 {chart_num}　{title}"
         role = {"icon": "case-icon", "screenshot": "case-screenshot"}.get(record.get("role"), "")
+        image_src = E(quote(name, safe="/"))
+        image_label = E(title or caption)
+        if role == "case-icon":
+            citations(record["evidence_ids"])
+            return f'<figure class="case-icon"><img src="{image_src}" alt="{image_label}" title="{image_label}"></figure>'
         heading = f'<div class="figure-title">{E(title)}</div>' if title else ""
         events = "".join(f'<li><strong>{E(e["month"])}</strong> {E(e["text"])} {citations(e["evidence_ids"])}</li>'
                          for e in record.get("events", []))
         event_list = f'<ol class="chart-events">{events}</ol>' if events else ""
-        return (f'<figure class="{role}">{heading}<img src="{E(quote(name, safe="/"))}" alt="{E(title or caption)}">'
+        return (f'<figure class="{role}">{heading}<img src="{image_src}" alt="{image_label}">'
                 f'<figcaption>{E(caption)} {citations(record["evidence_ids"])}</figcaption>{event_list}</figure>')
 
     external = TOKEN.sub(expand, source)

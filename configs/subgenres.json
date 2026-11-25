@@ -58,92 +58,24 @@
         "Hypercasual"
       ],
       "public_label": "全球移动游戏产品模型大盘（Casual / Hybridcasual / Hypercasual）",
-      "comment": "宏观休闲大盘单独拉取，不用五个研究品类直接求和替代。"
-    },
-    "merge_combined_reference": {
-      "id": "merge_combined",
-      "display_name": "合成合计（二合 + 三合）",
-      "component_subgenres": [
-        "merge_2",
-        "merge_3"
-      ],
-      "aggregation_method": "pre_sum_monthly_st_raw_before_market_calc",
-      "public_note": "由 Sensor Tower Match Merge 2 与 Match Merge 3 同口径月度估算值相加得出，仅作合成赛道总盘对照，非 ST 原生单一分类。",
-      "comment": "因基座 report_values.py 的 sum 运算要求单一 entity_id，data_pipeline.py 将二合与三合月度 ST 数值预聚合为 merge_combined 品类记录送入 market_calculations.py，完整保留双侧 evidence_ids。"
+      "comment": "宏观休闲大盘单独拉取，不用四个研究品类直接求和替代。"
     }
   },
   "subgenres": {
-    "merge_2": {
-      "id": "merge_2",
-      "display_name": "二合",
-      "display_name_en": "Merge-2",
-      "dimension_type": "gameplay_sub_genre",
+    "merge": {
+      "id": "merge",
+      "display_name": "合成",
+      "display_name_en": "Merge (2 & 3)",
+      "dimension_type": "gameplay_sub_genre_group",
       "additive_with_gameplay_peers": true,
+      "display_order": 1,
       "cross_category_priority": 1,
       "st_filter": {
         "custom_fields": [
           {
             "name": "Game Sub-genre",
             "values": [
-              "Match Merge 2"
-            ],
-            "global": true,
-            "exclude": false
-          }
-        ],
-        "market_size_breakdown": "game_sub_genre",
-        "market_size_target_values": [
-          "Match Merge 2"
-        ]
-      },
-      "excluded_sub_genres": [],
-      "whitelist_exceptions": [],
-      "excluded_apps": [],
-      "download_supplement": {
-        "enabled": false,
-        "top_n": 0,
-        "source_rank_limit": 20,
-        "exclude_already_in_revenue_top_n": true,
-        "include_in_auto_cr10": false,
-        "public_badge": ""
-      },
-      "top_revenue_n": 10,
-      "fetch_limit": 20,
-      "new_apps_target": {
-        "min": 3,
-        "max": 5,
-        "fixed": 5,
-        "rule": "rev_delta_5"
-      },
-      "public_definition": "Sensor Tower 玩法子类 Match Merge 2（二合一棋盘合成），覆盖全球 App Store 与 Google Play 双端合并估算。",
-      "metadata_reference": {
-        "external_play_ids": [
-          "10050213"
-        ],
-        "usage": "store_metadata_ad_creatives_and_new_app_discovery_only_never_in_st_calculations"
-      },
-      "_internal_notes": {
-        "verified_anchors": [
-          "Gossip Harbor: Merge & Story",
-          "Tasty Travels: Merge Game",
-          "Travel Town - Merge Adventure",
-          "Merge Mansion: Mystery Puzzles"
-        ],
-        "alignment_comment": "已通过 ST 实测闭环；参考图表中二合与三合合并统计导致前 14 名均为二合，本研究将二合、三合分列并在大盘补合成合计行。"
-      }
-    },
-    "merge_3": {
-      "id": "merge_3",
-      "display_name": "三合",
-      "display_name_en": "Merge-3",
-      "dimension_type": "gameplay_sub_genre",
-      "additive_with_gameplay_peers": true,
-      "cross_category_priority": 2,
-      "st_filter": {
-        "custom_fields": [
-          {
-            "name": "Game Sub-genre",
-            "values": [
+              "Match Merge 2",
               "Match Merge 3"
             ],
             "global": true,
@@ -152,6 +84,7 @@
         ],
         "market_size_breakdown": "game_sub_genre",
         "market_size_target_values": [
+          "Match Merge 2",
           "Match Merge 3"
         ]
       },
@@ -174,19 +107,13 @@
         "fixed": 5,
         "rule": "rev_delta_5"
       },
-      "public_definition": "Sensor Tower 玩法子类 Match Merge 3（三合一/大地图合成），与二合分列观察，大盘另附二合与三合合计行。",
+      "public_definition": "Sensor Tower 玩法子类 Match Merge 2（二合）与 Match Merge 3（三合）合并统计，覆盖全球 App Store 与 Google Play 双端合并估算；因三合体量远小于二合，大盘原始明细仍保留双子类拆分以供复核。",
       "metadata_reference": {
         "external_play_ids": [
+          "10050213",
           "10050214"
         ],
         "usage": "store_metadata_ad_creatives_and_new_app_discovery_only_never_in_st_calculations"
-      },
-      "_internal_notes": {
-        "verified_anchors": [
-          "Merge Dragons!",
-          "Panthia®: Magic & Merge Game (iOS 1615531457 -> Puzzle / Match Merge 3 / Casual)"
-        ],
-        "alignment_comment": "单列三合可独立观察奇幻/大地图建岛题材，避免被二合体量淹没。"
       }
     },
     "match_3": {
@@ -195,7 +122,8 @@
       "display_name_en": "Match-3 (Swap)",
       "dimension_type": "gameplay_sub_genre",
       "additive_with_gameplay_peers": true,
-      "cross_category_priority": 3,
+      "display_order": 2,
+      "cross_category_priority": 2,
       "st_filter": {
         "custom_fields": [
           {
@@ -264,13 +192,283 @@
         "alignment_comment": "与三消参考 Top15 口径完全一致，无跨列冲突。"
       }
     },
+    "hybrid_puzzle": {
+      "id": "hybrid_puzzle",
+      "display_name": "混变益智",
+      "display_name_en": "Hybridcasual Puzzle",
+      "dimension_type": "orthogonal_product_model_x_genre",
+      "additive_with_gameplay_peers": false,
+      "display_order": 3,
+      "cross_category_priority": 4,
+      "st_filter": {
+        "custom_fields": [
+          {
+            "name": "Game Product Model",
+            "values": [
+              "Hybridcasual"
+            ],
+            "global": true,
+            "exclude": false
+          },
+          {
+            "name": "Game Genre",
+            "values": [
+              "Puzzle"
+            ],
+            "global": true,
+            "exclude": false
+          }
+        ],
+        "market_size_breakdown": "game_sub_genre",
+        "market_size_target_values": [],
+        "comment": "主过滤以 Hybridcasual × Puzzle 交集锁定新形态益智池（2026-05~10 实测命中 1,979 个应用，收入前 20 全部为新形态混变益智，自动过滤割草射击、塔防、音游、赛车与 io 吞噬）。不放开 Match Pair + Casual 全池。"
+      },
+      "target_mechanic_archetypes": [
+        {
+          "archetype_id": "pair_3d_match",
+          "label_zh": "3D 配对与货架堆叠消除",
+          "st_sub_genres_verified": [
+            "Match Pair"
+          ],
+          "exemplars": [
+            "Goods Puzzle: Sort Challenge™",
+            "Triple Match City",
+            "Triple Match 3D",
+            "Match Factory!（白名单特例）"
+          ]
+        },
+        {
+          "archetype_id": "color_pixel_flow",
+          "label_zh": "颜色流与像素流消除",
+          "st_sub_genres_verified": [],
+          "st_sub_genre_status": "verify_via_full_preflight_breakdown",
+          "exemplars": [
+            "Pixel Flow!",
+            "Colony Flow!",
+            "Food Hunt: Pixel Puzzle"
+          ]
+        },
+        {
+          "archetype_id": "block_jam_sand",
+          "label_zh": "块消、彩色滑块与流沙消除",
+          "st_sub_genres_verified": [
+            "Block"
+          ],
+          "exemplars": [
+            "Block Out! - Color Sort Puzzle",
+            "Color Block Jam",
+            "Sand Blocks: Drop Puzzle",
+            "Cube Land Puzzle Game"
+          ]
+        },
+        {
+          "archetype_id": "sort_traffic_jam",
+          "label_zh": "颜色分拣与挪车解堵",
+          "st_sub_genres_verified": [
+            "Sort"
+          ],
+          "exemplars": [
+            "Magic Sort!",
+            "Bus Traffic Fever!",
+            "Loop Sort",
+            "Marble Sort!",
+            "Car Sort: Color Puzzle",
+            "Jam Bus:Sandfall"
+          ]
+        },
+        {
+          "archetype_id": "screw_disassembly",
+          "label_zh": "打螺丝与拆解益智",
+          "st_sub_genres_verified": [
+            "Screw"
+          ],
+          "exemplars": [
+            "Screwdom",
+            "Happy Screw Trip 3D"
+          ]
+        },
+        {
+          "archetype_id": "yarn_knot_untangle",
+          "label_zh": "绕线编织、解结与物理变形消除",
+          "st_sub_genres_verified": [],
+          "st_sub_genre_status": "verify_via_full_preflight_breakdown",
+          "exemplars": [
+            "Yarn Loop: Knit Puzzle",
+            "Jelly Busters: Puzzle Game",
+            "Gecko Out",
+            "Hexa Away",
+            "Wool Crush™-Escape Traffic Jam"
+          ]
+        }
+      ],
+      "full_preflight_subgenre_discovery": {
+        "required_before_full_freeze": true,
+        "tool_suffix": "sensortower-get-app-market-size",
+        "params_template": {
+          "breakdown": "game_sub_genre",
+          "metric": "revenue",
+          "os": "unified",
+          "regions": [],
+          "custom_fields": [
+            {
+              "name": "Game Product Model",
+              "values": [
+                "Hybridcasual"
+              ],
+              "global": true,
+              "exclude": false
+            },
+            {
+              "name": "Game Genre",
+              "values": [
+                "Puzzle"
+              ],
+              "global": true,
+              "exclude": false
+            }
+          ]
+        },
+        "comment": "全量首轮先跑 1 次只读分解，核实 Hybridcasual × Puzzle 内部实际出现的 Game Sub-genre 枚举，并据此验证传统益智排除项可直接走 ST exclude:true 还是由脚本后置过滤。"
+      },
+      "excluded_sub_genres": [
+        {
+          "value": "Match Merge 2",
+          "apply_mode": "cross_column_hard_exclude",
+          "reason": "已归入「合成」品类，防止跨列双计。"
+        },
+        {
+          "value": "Match Merge 3",
+          "apply_mode": "cross_column_hard_exclude",
+          "reason": "已归入「合成」品类，防止跨列双计。"
+        },
+        {
+          "value": "Match Swap",
+          "apply_mode": "cross_column_hard_exclude",
+          "reason": "已单列「三消」品类，防止跨列双计。"
+        },
+        {
+          "value": "Word",
+          "apply_mode": "verify_enum_before_st_exclude_else_post_filter",
+          "reason": "传统拼词/填字游戏（如 Zen Word、NYT Games），不属新形态混变益智。"
+        },
+        {
+          "value": "Trivia",
+          "apply_mode": "verify_enum_before_st_exclude_else_post_filter",
+          "reason": "问答与脑筋急转弯（如 Brain Test），不属新形态消除/分拣益智。"
+        },
+        {
+          "value": "Jigsaw",
+          "apply_mode": "verify_enum_before_st_exclude_else_post_filter",
+          "reason": "传统拼图，不属新形态混变益智。"
+        },
+        {
+          "value": "Hidden Objects",
+          "apply_mode": "verify_enum_before_st_exclude_else_post_filter",
+          "reason": "传统寻物解谜，不属新形态消除/分拣益智。ST 枚举用复数。"
+        },
+        {
+          "value": "Riddle",
+          "apply_mode": "verify_enum_before_st_exclude_else_post_filter",
+          "reason": "反常识脑筋急转弯类，实测 ST 将 Brain Test 标为 Riddle"
+        },
+        {
+          "value": "Environmental",
+          "apply_mode": "verify_enum_before_st_exclude_else_post_filter",
+          "reason": "潜行与环境互动解谜，实测 ST 将 Robbery Bob 标为 Environmental"
+        }
+      ],
+      "whitelist_policy": "tag_gap_exception_only_never_open_match_pair_casual",
+      "whitelist_max": 2,
+      "whitelist_exceptions": [
+        {
+          "app_name": "Match Factory!",
+          "ios_app_id": "6449094229",
+          "unified_app_id": null,
+          "resolve_via_search_entities": true,
+          "verified_st_tags": {
+            "game_genre": "Puzzle",
+            "game_sub_genre": "Match Pair",
+            "game_product_model": "Casual"
+          },
+          "include_in_auto_cr10": false,
+          "public_badge": "3D 配对代表 · 单列特例（不计入自动池 CR10 分母）",
+          "public_reason": "核心玩法属 3D 物体堆叠配对新形态益智，因 ST 产品模型标为 Casual 未被 Hybridcasual 标签覆盖，按研究定义作为单一特例列示，不放开整个 Match Pair + Casual 池以免混入传统麻将与连连看。",
+          "_internal_note": "仅作单一标签缺口特例，不新增其他手工补录产品。"
+        }
+      ],
+      "excluded_apps": [
+        {
+          "app_name": "Brain Test: Tricky Puzzles",
+          "reason": "文字脑筋急转弯，非新形态消除/分拣/拆解益智（云端实测混变益智下载 #8）。"
+        },
+        {
+          "app_name": "Zen Word - Relax Puzzle Game",
+          "reason": "传统填字拼词游戏，非新形态混变益智（云端实测混变益智下载 #16）。"
+        },
+        {
+          "app_name": "Robbery Bob - King of Sneak",
+          "reason": "老牌动作潜行关卡解谜，非新形态混变益智（云端实测混变益智下载 #19）。"
+        },
+        {
+          "app_name": "NYT Games: Wordle & Crossword",
+          "reason": "新闻媒体订阅制传统字谜合集，非新形态混变手游。"
+        },
+        {
+          "app_name": "Mob Control",
+          "reason": "街机推兵对抗，非益智解谜（已被 Game Genre=Puzzle 自动排除，保留双保险）。"
+        },
+        {
+          "app_name": "All in Hole: Black Hole Games",
+          "reason": "io 吞噬街机，非益智解谜（已被 Game Genre=Puzzle 自动排除，保留双保险）。"
+        },
+        {
+          "app_name": "BangBang Survivor",
+          "reason": "生存割草肉鸽，非益智解谜（已被 Game Genre=Puzzle 自动排除，保留双保险）。"
+        },
+        {
+          "app_name": "Archero 2",
+          "reason": "动作射击肉鸽，非益智解谜（已被 Game Genre=Puzzle 自动排除，保留双保险）。"
+        }
+      ],
+      "download_supplement": {
+        "enabled": true,
+        "top_n": 5,
+        "source_rank_limit": 20,
+        "exclude_already_in_revenue_top_n": true,
+        "include_in_auto_cr10": false,
+        "public_badge": "下载增补 · IAA 权重较高（不计入收入主榜分母）",
+        "comment": "混变益智含大量混合广告变现产品，ST 收入仅计 IAP 净收入，开启下载增补 5 位以覆盖高下载但 IAP 排名偏后的代表产品。"
+      },
+      "top_revenue_n": 10,
+      "fetch_limit": 20,
+      "new_apps_target": {
+        "min": 3,
+        "max": 5,
+        "fixed": 5,
+        "rule": "rev_delta_3_dl_delta_2"
+      },
+      "public_definition": "面向新形态益智解谜的研究定义：以 Sensor Tower Game Product Model = Hybridcasual 与 Game Genre = Puzzle 为主标签条件（覆盖 3D 配对、颜色/像素流、块消/滑块、分拣/挪车、打螺丝、绕线解结等玩法），排除经典二合/三合/三消及传统字谜、脑筋急转弯、潜行解谜；个别 ST 标为 Casual 的核心 3D 配对代表以特例单列且不计入自动池 CR10 分母。该列与其余三类玩法品类（合成、三消、模拟经营）正交，不可与其余三类玩法品类（合成、三消、模拟经营）相加求和大盘。",
+      "metadata_reference": {
+        "external_play_ids": [
+          "10050104",
+          "10050105"
+        ],
+        "usage": "store_metadata_ad_creatives_and_new_app_discovery_only_never_in_st_calculations"
+      },
+      "_internal_notes": {
+        "derived_from_reference_20_games": "20 个参考产品中 15 个已直落 ST Hybridcasual × Puzzle 半年收入 Top20，3 个近月放量品同属该标签池，1 个报业字谜（NYT Games）按规则排除，仅 Match Factory! 走单品白名单特例。",
+        "pending_check_in_full_mode": "云端实测下载 #17 Pocket Sort: Coin Merge Puzzle 需在全量首轮用 get-sub-app-details(US) 核实是否标了 Match Merge 2，防跨列双计。",
+        "verified_classification_note": "Pocket Sort: Coin Merge Puzzle 已核为 Puzzle／Sort／Hybridcasual，非经典二合；Burger Please! 属 Hypercasual。"
+      }
+    },
     "simulation": {
       "id": "simulation",
       "display_name": "模拟经营",
       "display_name_en": "Simulation Management",
       "dimension_type": "gameplay_sub_genre_group",
       "additive_with_gameplay_peers": true,
-      "cross_category_priority": 4,
+      "display_order": 4,
+      "cross_category_priority": 3,
       "st_filter": {
         "custom_fields": [
           {
@@ -408,287 +606,18 @@
         ],
         "alignment_comment": "已将街机放置经营归入模拟经营而非混变益智；上述 5 个次级锚点的 ST 子类标签待 full 首轮用 get-sub-app-details(US) 核实留档。"
       }
-    },
-    "hybrid_puzzle": {
-      "id": "hybrid_puzzle",
-      "display_name": "混变益智",
-      "display_name_en": "Hybridcasual Puzzle",
-      "dimension_type": "orthogonal_product_model_x_genre",
-      "additive_with_gameplay_peers": false,
-      "cross_category_priority": 5,
-      "st_filter": {
-        "custom_fields": [
-          {
-            "name": "Game Product Model",
-            "values": [
-              "Hybridcasual"
-            ],
-            "global": true,
-            "exclude": false
-          },
-          {
-            "name": "Game Genre",
-            "values": [
-              "Puzzle"
-            ],
-            "global": true,
-            "exclude": false
-          }
-        ],
-        "market_size_breakdown": "game_sub_genre",
-        "market_size_target_values": [],
-        "comment": "主过滤以 Hybridcasual × Puzzle 交集锁定新形态益智池（2026-05~10 实测命中 1,979 个应用，收入前 20 全部为新形态混变益智，自动过滤割草射击、塔防、音游、赛车与 io 吞噬）。不放开 Match Pair + Casual 全池。"
-      },
-      "target_mechanic_archetypes": [
-        {
-          "archetype_id": "pair_3d_match",
-          "label_zh": "3D 配对与货架堆叠消除",
-          "st_sub_genres_verified": [
-            "Match Pair"
-          ],
-          "exemplars": [
-            "Goods Puzzle: Sort Challenge™",
-            "Triple Match City",
-            "Triple Match 3D",
-            "Match Factory!（白名单特例）"
-          ]
-        },
-        {
-          "archetype_id": "color_pixel_flow",
-          "label_zh": "颜色流与像素流消除",
-          "st_sub_genres_verified": [],
-          "st_sub_genre_status": "verify_via_full_preflight_breakdown",
-          "exemplars": [
-            "Pixel Flow!",
-            "Colony Flow!",
-            "Food Hunt: Pixel Puzzle"
-          ]
-        },
-        {
-          "archetype_id": "block_jam_sand",
-          "label_zh": "块消、彩色滑块与流沙消除",
-          "st_sub_genres_verified": [
-            "Block"
-          ],
-          "exemplars": [
-            "Block Out! - Color Sort Puzzle",
-            "Color Block Jam",
-            "Sand Blocks: Drop Puzzle",
-            "Cube Land Puzzle Game"
-          ]
-        },
-        {
-          "archetype_id": "sort_traffic_jam",
-          "label_zh": "颜色分拣与挪车解堵",
-          "st_sub_genres_verified": [
-            "Sort"
-          ],
-          "exemplars": [
-            "Magic Sort!",
-            "Bus Traffic Fever!",
-            "Loop Sort",
-            "Marble Sort!",
-            "Car Sort: Color Puzzle",
-            "Jam Bus:Sandfall"
-          ]
-        },
-        {
-          "archetype_id": "screw_disassembly",
-          "label_zh": "打螺丝与拆解益智",
-          "st_sub_genres_verified": [
-            "Screw"
-          ],
-          "exemplars": [
-            "Screwdom",
-            "Happy Screw Trip 3D"
-          ]
-        },
-        {
-          "archetype_id": "yarn_knot_untangle",
-          "label_zh": "绕线编织、解结与物理变形消除",
-          "st_sub_genres_verified": [],
-          "st_sub_genre_status": "verify_via_full_preflight_breakdown",
-          "exemplars": [
-            "Yarn Loop: Knit Puzzle",
-            "Jelly Busters: Puzzle Game",
-            "Gecko Out",
-            "Hexa Away",
-            "Wool Crush™-Escape Traffic Jam"
-          ]
-        }
-      ],
-      "full_preflight_subgenre_discovery": {
-        "required_before_full_freeze": true,
-        "tool_suffix": "sensortower-get-app-market-size",
-        "params_template": {
-          "breakdown": "game_sub_genre",
-          "metric": "revenue",
-          "os": "unified",
-          "regions": [],
-          "custom_fields": [
-            {
-              "name": "Game Product Model",
-              "values": [
-                "Hybridcasual"
-              ],
-              "global": true,
-              "exclude": false
-            },
-            {
-              "name": "Game Genre",
-              "values": [
-                "Puzzle"
-              ],
-              "global": true,
-              "exclude": false
-            }
-          ]
-        },
-        "comment": "全量首轮先跑 1 次只读分解，核实 Hybridcasual × Puzzle 内部实际出现的 Game Sub-genre 枚举，并据此验证传统益智排除项可直接走 ST exclude:true 还是由脚本后置过滤。"
-      },
-      "excluded_sub_genres": [
-        {
-          "value": "Match Merge 2",
-          "apply_mode": "cross_column_hard_exclude",
-          "reason": "已单列「二合」品类，防止混变形态二合新品跨列双计。"
-        },
-        {
-          "value": "Match Merge 3",
-          "apply_mode": "cross_column_hard_exclude",
-          "reason": "已单列「三合」品类，防止跨列双计。"
-        },
-        {
-          "value": "Match Swap",
-          "apply_mode": "cross_column_hard_exclude",
-          "reason": "已单列「三消」品类，防止跨列双计。"
-        },
-        {
-          "value": "Word",
-          "apply_mode": "verify_enum_before_st_exclude_else_post_filter",
-          "reason": "传统拼词/填字游戏（如 Zen Word、NYT Games），不属新形态混变益智。"
-        },
-        {
-          "value": "Trivia",
-          "apply_mode": "verify_enum_before_st_exclude_else_post_filter",
-          "reason": "问答与脑筋急转弯（如 Brain Test），不属新形态消除/分拣益智。"
-        },
-        {
-          "value": "Jigsaw",
-          "apply_mode": "verify_enum_before_st_exclude_else_post_filter",
-          "reason": "传统拼图，不属新形态混变益智。"
-        },
-        {
-          "value": "Hidden Objects",
-          "apply_mode": "verify_enum_before_st_exclude_else_post_filter",
-          "reason": "传统寻物解谜，不属新形态消除/分拣益智。ST 枚举用复数。"
-        },
-        {
-          "value": "Riddle",
-          "apply_mode": "verify_enum_before_st_exclude_else_post_filter",
-          "reason": "反常识脑筋急转弯类，实测 ST 将 Brain Test 标为 Riddle"
-        },
-        {
-          "value": "Environmental",
-          "apply_mode": "verify_enum_before_st_exclude_else_post_filter",
-          "reason": "潜行与环境互动解谜，实测 ST 将 Robbery Bob 标为 Environmental"
-        }
-      ],
-      "whitelist_policy": "tag_gap_exception_only_never_open_match_pair_casual",
-      "whitelist_max": 2,
-      "whitelist_exceptions": [
-        {
-          "app_name": "Match Factory!",
-          "ios_app_id": "6449094229",
-          "unified_app_id": null,
-          "resolve_via_search_entities": true,
-          "verified_st_tags": {
-            "game_genre": "Puzzle",
-            "game_sub_genre": "Match Pair",
-            "game_product_model": "Casual"
-          },
-          "include_in_auto_cr10": false,
-          "public_badge": "3D 配对代表 · 单列特例（不计入自动池 CR10 分母）",
-          "public_reason": "核心玩法属 3D 物体堆叠配对新形态益智，因 ST 产品模型标为 Casual 未被 Hybridcasual 标签覆盖，按研究定义作为单一特例列示，不放开整个 Match Pair + Casual 池以免混入传统麻将与连连看。",
-          "_internal_note": "仅作单一标签缺口特例，不新增其他手工补录产品。"
-        }
-      ],
-      "excluded_apps": [
-        {
-          "app_name": "Brain Test: Tricky Puzzles",
-          "reason": "文字脑筋急转弯，非新形态消除/分拣/拆解益智（云端实测混变益智下载 #8）。"
-        },
-        {
-          "app_name": "Zen Word - Relax Puzzle Game",
-          "reason": "传统填字拼词游戏，非新形态混变益智（云端实测混变益智下载 #16）。"
-        },
-        {
-          "app_name": "Robbery Bob - King of Sneak",
-          "reason": "老牌动作潜行关卡解谜，非新形态混变益智（云端实测混变益智下载 #19）。"
-        },
-        {
-          "app_name": "NYT Games: Wordle & Crossword",
-          "reason": "新闻媒体订阅制传统字谜合集，非新形态混变手游。"
-        },
-        {
-          "app_name": "Mob Control",
-          "reason": "街机推兵对抗，非益智解谜（已被 Game Genre=Puzzle 自动排除，保留双保险）。"
-        },
-        {
-          "app_name": "All in Hole: Black Hole Games",
-          "reason": "io 吞噬街机，非益智解谜（已被 Game Genre=Puzzle 自动排除，保留双保险）。"
-        },
-        {
-          "app_name": "BangBang Survivor",
-          "reason": "生存割草肉鸽，非益智解谜（已被 Game Genre=Puzzle 自动排除，保留双保险）。"
-        },
-        {
-          "app_name": "Archero 2",
-          "reason": "动作射击肉鸽，非益智解谜（已被 Game Genre=Puzzle 自动排除，保留双保险）。"
-        }
-      ],
-      "download_supplement": {
-        "enabled": true,
-        "top_n": 5,
-        "source_rank_limit": 20,
-        "exclude_already_in_revenue_top_n": true,
-        "include_in_auto_cr10": false,
-        "public_badge": "下载增补 · IAA 权重较高（不计入收入主榜分母）",
-        "comment": "混变益智含大量混合广告变现产品，ST 收入仅计 IAP 净收入，开启下载增补 5 位以覆盖高下载但 IAP 排名偏后的代表产品。"
-      },
-      "top_revenue_n": 10,
-      "fetch_limit": 20,
-      "new_apps_target": {
-        "min": 3,
-        "max": 5,
-        "fixed": 5,
-        "rule": "rev_delta_3_dl_delta_2"
-      },
-      "public_definition": "面向新形态益智解谜的研究定义：以 Sensor Tower Game Product Model = Hybridcasual 与 Game Genre = Puzzle 为主标签条件（覆盖 3D 配对、颜色/像素流、块消/滑块、分拣/挪车、打螺丝、绕线解结等玩法），排除经典二合/三合/三消及传统字谜、脑筋急转弯、潜行解谜；个别 ST 标为 Casual 的核心 3D 配对代表以特例单列且不计入自动池 CR10 分母。该列与前四类玩法维度正交，不可与前四列相加求和大盘。",
-      "metadata_reference": {
-        "external_play_ids": [
-          "10050104",
-          "10050105"
-        ],
-        "usage": "store_metadata_ad_creatives_and_new_app_discovery_only_never_in_st_calculations"
-      },
-      "_internal_notes": {
-        "derived_from_reference_20_games": "20 个参考产品中 15 个已直落 ST Hybridcasual × Puzzle 半年收入 Top20，3 个近月放量品同属该标签池，1 个报业字谜（NYT Games）按规则排除，仅 Match Factory! 走单品白名单特例。",
-        "pending_check_in_full_mode": "云端实测下载 #17 Pocket Sort: Coin Merge Puzzle 需在全量首轮用 get-sub-app-details(US) 核实是否标了 Match Merge 2，防跨列双计。",
-        "verified_classification_note": "Pocket Sort: Coin Merge Puzzle 已核为 Puzzle／Sort／Hybridcasual，非经典二合；Burger Please! 属 Hypercasual。"
-      }
     }
   },
   "presets": {
     "pilot": {
-      "label": "二合单品类试点（首版验通全链）",
+      "label": "合成单品类试点（二合与三合合并，首版验通全链）",
       "enabled_subgenres": [
-        "merge_2"
+        "merge"
       ],
       "market_overview_reference_subgenres": [
-        "merge_2",
-        "merge_3"
+        "merge"
       ],
-      "include_merge_combined_row": true,
+      "include_merge_combined_row": false,
       "top_revenue_n": 10,
       "new_apps_target_per_subgenre": {
         "min": 3,
@@ -701,8 +630,8 @@
       },
       "blind_qc_sample_size": 5,
       "opportunity_cards_target": {
-        "min": 2,
-        "max": 3
+        "min": 0,
+        "max": 0
       },
       "enable_opportunity_cards": false,
       "opportunity_enable_conditions": {
@@ -713,44 +642,42 @@
         "note": "四项同时成立才启用完整机会卡"
       },
       "film_refs_target": {
-        "min": 3,
-        "max": 4
+        "min": 2,
+        "max": 2
       },
       "matrix_mode": "single_subgenre_theme_x_presentation",
       "html_script_mode": "zero_js",
       "planned_rounds": 2
     },
     "full": {
-      "label": "五品类全量看板",
+      "label": "四品类全量看板（合成、三消、混变益智、模拟经营）",
       "enabled_subgenres": [
-        "merge_2",
-        "merge_3",
+        "merge",
         "match_3",
-        "simulation",
-        "hybrid_puzzle"
+        "hybrid_puzzle",
+        "simulation"
       ],
       "market_overview_reference_subgenres": [
-        "merge_2",
-        "merge_3",
+        "merge",
         "match_3",
-        "simulation",
-        "hybrid_puzzle"
+        "hybrid_puzzle",
+        "simulation"
       ],
-      "include_merge_combined_row": true,
+      "include_merge_combined_row": false,
       "top_revenue_n": 10,
       "new_apps_target_per_subgenre": {
         "min": 3,
         "max": 5
       },
       "download_supplement_enabled_subgenres": [
-        "simulation",
-        "hybrid_puzzle"
+        "hybrid_puzzle",
+        "simulation"
       ],
       "tag_vocab_range": {
         "min": 25,
         "max": 40
       },
-      "blind_qc_sample_size": 15,
+      "blind_qc_sample_size": 12,
       "blind_qc_per_subgenre": 3,
       "opportunity_cards_target": {
         "min": 3,

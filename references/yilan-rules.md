@@ -8,7 +8,7 @@
 
 | 业务用途 | 允许调用的报表 `identify` | 在本技能中的作用 | 成品来源卡 `provider` 显示名 |
 |---|---|---|---|
-| 应用基础信息与首发日核验 | `app_info` | 补 `publisher_start`、`subtitle`、发行地区（识别纯国服 iOS）、商店链接 | `应用商店公开元数据` |
+| 应用基础信息与商店发行日参照 | `app_info` | 补 `publisher_start`、`subtitle`、发行地区（识别纯国服 iOS）、商店链接 | `应用商店公开元数据` |
 | 英文商店描述与核心截图 | `app_detail_desc` | 补完整英文 `description` 与最多 5 张 `screenshot_urls`（供打标必看前 2–3 张） | `应用商店公开元数据` |
 | `m_app_id` 与图标索引 | `competitor_category_rankings` | 仅取 `m_app_id` 与 `gameIcon` 映射供批量查素材与下载图标；**严禁采用其收入/下载数值** | `应用商店公开元数据` |
 | 境外买量素材辅证 | `material_appgrowing` | 按 `m_app_ids` 批量取高曝光前 3–5 条英文 `slogan` 与封面 URL；**一律标 `marketing_only: true`** | `第三方投放监测素材` |
@@ -34,7 +34,7 @@ get-current-time（探针）→ list-actions → get-action-params(identify) →
    - 每轮生成 1 个 32 位小写 hex UUID（去横线）作为 `mcp_trace_id`，本轮复用；
    - `mcp_user_question` 与 `mcp_trace_id` 仅作为工具顶层参数传递，**严禁塞入 `params` 对象内**；
    - 严禁向 `params` 写入保留键：`c`、`a`、`token_sign`、`\_source`、`mcp_user_question`、`mcp_trace_id`。
-3. **动态下拉枚举**：`play` 必须传叶节点纯数字字符串（例如二合 `"10050213"`、三合 `"10050214"`、三消 `"10050218"`、模拟经营 `"10040201,10040204,10040206,10040209"`，对应 `configs/subgenres.json` 中的 `metadata_reference.external_play_ids`），传中文必报 `code: 0`。
+3. **动态下拉枚举**：`play` 必须传叶节点纯数字字符串（例如合成 `"10050213,10050214"`、三消 `"10050218"`、模拟经营 `"10040201,10040204,10040206,10040209"`，对应 `configs/subgenres.json` 中的 `metadata_reference.external_play_ids`），传中文必报 `code: 0`。
 4. **并发节流**：〔待核〕服务端未声明隐藏 QPS 限流配额，统一采用**单批次内串行调用 + 失败重试 1 次**，不做高并发轰炸。
 
 ---
@@ -64,12 +64,12 @@ get-current-time（探针）→ list-actions → get-action-params(identify) →
 - **处置**：凡 `truncated == true`，必须立即调用 `data_pipeline.py fetch-oss --raw-file <原响应.json> --out-file <完整落盘.json>` 下载全量 JSON 并核对行数等于 `total_rows`；**绝不拿 `demo_rows` 当全量数据**；落盘来源卡时严禁保留含签名凭据的临时 `data_url`。
 
 ### 4.3 父级 `category_name` 错位陷阱
-- **现象**：传入叶子 `play`（如二合 `10050213` 或三消 `10050218`），返回体中的 `category_id` / `category_name` 仍固定显示父级 `100502 / 消除`。
+- **现象**：传入叶子 `play`（如合成 `"10050213,10050214"` 或三消 `"10050218"`），返回体中的 `category_id` / `category_name` 仍固定显示父级 `100502 / 消除`。
 - **处置**：涉及品类索引时一律以**请求入参 `play`** 对应 `configs/subgenres.json` 的业务品类为准，完全忽略返回体中的 `category_name`。
 
 ### 4.4 首发日期字段辨析
-- `app_info` 同时返回 `publisher_start`（最早产生收入/下载数据的真实发行日，格式 `YYYY.MM.DD`）与 `start_date`（商店上架日）及 `BOOKING_START_TIME`（预约日）。
-- **本技能新品核验统一以 `publisher_start` 为主判据**（缺失时再对照 `app_detail_desc.game_info` 与商店公开页）。
+- `app_info` 同时返回 `publisher_start`（单商店发行日，格式 `YYYY.MM.DD`）与 `start_date`（商店上架日）及 `BOOKING_START_TIME`（预约日）。
+- `publisher_start` 只作单商店发行日参照。缺失时可查 `app_detail_desc.game_info` 与商店公开页。与 ST 的 `effective_launch_date` 分字段保留，品类新品入围按 ST 生效首发日核验。
 
 ### 4.5 金额字段隔离（防 40% 偏差）
 - `ori_income` / `income` 为未扣渠道分成的毛流水，`ori_actual_income` / `actual_income` 为约 70% 的估算实收；`web_data_ranking` 甚至不提供 `ori_income`。

@@ -23,6 +23,7 @@ from common import read, write
 
 
 NARRATIVE_AXIS = "narrative_motif"
+INTENSITY_AXIS = "narrative_intensity"
 OFFICIAL_MORPHEMES = ("复建", "复耕", "选装", "物业", "镇区", "影都", "复苏", "矩阵", "体系")
 COMPOUND_LABEL_RE = re.compile(r"[/／、()（）\[\]［］【】或]")
 
@@ -47,6 +48,61 @@ def _checked_narrative(product, allowed):
     if len(values) > 1 or any(not isinstance(v, str) or v not in allowed for v in values):
         raise ValueError(f"{product.get('unified_app_id')}: invalid narrative_motif {values!r}; expected at most one controlled value")
     return next(iter(values), None)
+
+
+def _checked_narrative_intensity(prod, cfg):
+    uid = prod.get("unified_app_id")
+    intensity = prod.get(INTENSITY_AXIS)
+    allowed = cfg[INTENSITY_AXIS]["controlled_enum"]
+    if intensity not in allowed:
+        raise ValueError(f"{uid}: invalid narrative_intensity {intensity!r}; expected one of {allowed}")
+    motif = _checked_narrative(prod, cfg[NARRATIVE_AXIS]["controlled_enum"])
+    linkage = cfg[INTENSITY_AXIS]["motif_linkage"][intensity]
+    if linkage == "must_be_null" and motif is not None:
+        raise ValueError(f"{uid}: narrative_motif must be empty for {intensity}")
+    if linkage == "must_be_non_null" and motif is None:
+        raise ValueError(f"{uid}: narrative_motif is required for {intensity}")
+    return intensity
+
+
+def _narrative_evidence_errors(prod, intensity, sources, cfg):
+    pname = prod.get("app_name") or prod["unified_app_id"]
+    evidence = prod.get("narrative_evidence")
+    if not isinstance(evidence, list) or any(not isinstance(item, dict) for item in evidence):
+        return [f"{pname}: narrative_evidence must be an array of objects"]
+
+    policy = cfg[INTENSITY_AXIS]["evidence_policy"]
+    high_types = set(policy["high_reliability_types"])
+    non_mkt_types = set(cfg["evidence_rules"]["non_marketing_evidence_types"])
+    errors = []
+    distinct = set()
+    for idx, item in enumerate(evidence):
+        label = f"{pname}/narrative_evidence[{idx}]"
+        ev_type = item.get("evidence_type")
+        ev_src = item.get("evidence_source_id")
+        ev_quote = item.get("evidence_quote")
+        marketing_only = item.get("marketing_only")
+        if marketing_only is True or ev_type == "ad_creative":
+            errors.append(f"{label}: marketing-only evidence forbidden for narrative_evidence")
+        elif marketing_only is not False:
+            errors.append(f"{label}: marketing_only must be false")
+        elif not isinstance(ev_type, str) or ev_type not in non_mkt_types:
+            errors.append(f"{label}: invalid evidence_type {ev_type!r}")
+        elif not isinstance(ev_src, str) or not ev_src or ev_src not in sources:
+            errors.append(f"{label}: unknown evidence_source_id {ev_src!r} in bundle sources")
+        elif not isinstance(ev_quote, str) or not ev_quote.strip():
+            errors.append(f"{label}: missing evidence_quote")
+        else:
+            distinct.add((ev_type, ev_src))
+
+    if intensity == "无剧情":
+        if len(distinct) < policy["min_evidence_for_none"]:
+            errors.append(f"{pname}: 无剧情 requires at least one non-marketing verification record")
+    elif prod.get("confidence") != "low":
+        high_count = sum(ev_type in high_types for ev_type, _ in distinct)
+        if len(distinct) < policy["min_evidence_for_story"] or high_count < policy["min_high_reliability_for_story"]:
+            errors.append(f"{pname}: {intensity} requires at least two distinct non-marketing records, including one high-reliability source")
+    return errors
 
 
 def load_blacklist_cfg() -> dict:
@@ -157,13 +213,15 @@ def cmd_validate_vocab(args) -> int:
                 errors.append(f"{tid}: invalid parent_domain {parent_domain!r} for {args.preset}")
         if axis == NARRATIVE_AXIS and zh not in cfg[NARRATIVE_AXIS]["controlled_enum"]:
             errors.append(f"{tid}: invalid narrative_motif '{zh}'")
-        hit_ids = item.get("hit_app_ids") or []
+        hit_ids = item.get("hit_app_ids", [])
         if not isinstance(hit_ids, list):
             errors.append(f"{tid}: hit_app_ids must be an array")
         else:
             hits = {str(uid).strip() for uid in hit_ids if uid is not None and str(uid).strip()}
             hits_by_id[tid] = hits
             hits_by_axis[axis].update(hits)
+            if axis in axes and not hits:
+                errors.append(f"{tid}: hit_app_ids must contain at least one app ID")
             if len(hits) == 1 and item.get("emerging") is not True:
                 warnings.append(f"{tid}: one hit without emerging=true")
         if fmt.get("require_definition", True) and not str(item.get("definition") or "").strip():
@@ -229,6 +287,10 @@ def cmd_validate_tags(args) -> int:
     tags_products = _extract_product_list(read(Path(args.tags).resolve()))
     roster_products = _extract_product_list(read(Path(args.roster).resolve()))
     roster_map = {str(p["unified_app_id"]): p for p in roster_products}
+    bundle = read(Path(args.bundle).resolve())
+    sources = bundle.get("sources") if isinstance(bundle, dict) else None
+    if not isinstance(sources, dict):
+        raise ValueError("tagging input bundle must contain a sources object")
 
     errors, warnings, low_conf_ids = [], [], []
     tagged_uids = set()
@@ -255,9 +317,38 @@ def cmd_validate_tags(args) -> int:
             errors.append(f"{pname}: tags must be an array of objects")
             continue
         try:
-            _checked_narrative(prod, cfg[NARRATIVE_AXIS]["controlled_enum"])
+            intensity = _checked_narrative_intensity(prod, cfg)
         except ValueError as exc:
             errors.append(str(exc))
+        else:
+            errors.extend(_narrative_evidence_errors(prod, intensity, sources, cfg))
+
+        shots_rev = prod.get("screenshots_reviewed")
+        if shots_rev is None:
+            shots_rev = []
+        if not isinstance(shots_rev, list):
+            errors.append(f"{pname}: screenshots_reviewed must be an array")
+            shots_rev = []
+        available_shots = (roster_map.get(uid) or {}).get("screenshot_files") or []
+        for shot in shots_rev:
+            if not isinstance(shot, str) or shot not in available_shots:
+                errors.append(f"{pname}: reviewed screenshot {shot!r} not in roster screenshot_files")
+        if ev_cfg.get("presentation_slot_requires_visual_check", True) and available_shots and not shots_rev:
+            errors.append(f"{pname}: screenshots_reviewed is empty while {len(available_shots)} local screenshots exist")
+
+        for tag in raw_tags:
+            tid = tag.get("tag_id") or tag.get("slot") or ""
+            ev_src = str(tag.get("evidence_source_id") or "").strip()
+            if not ev_src:
+                errors.append(f"{pname}/{tid}: missing evidence_source_id")
+            elif ev_src not in sources:
+                errors.append(f"{pname}/{tid}: unknown evidence_source_id {ev_src!r} in bundle sources")
+            elif tag.get("evidence_type") == "store_screenshot":
+                source = sources[ev_src]
+                shot = source.get("raw_file") if isinstance(source, dict) else None
+                if not shot or shot not in shots_rev:
+                    errors.append(f"{pname}/{tid}: source {ev_src!r} screenshot {shot!r} not in screenshots_reviewed")
+
         tags = _main_tags(prod)
         if not min_tags <= len(tags) <= max_tags:
             errors.append(f"{pname}: tag count {len(tags)} outside [{min_tags}, {max_tags}]")
@@ -284,15 +375,12 @@ def cmd_validate_tags(args) -> int:
 
             ev_type = str(t.get("evidence_type") or "")
             mkt_only = bool(t.get("marketing_only", False))
-            ev_src = str(t.get("evidence_source_id") or "").strip()
             ev_quote = str(t.get("evidence_quote") or "").strip()
             if ev_type not in valid_ev_types:
                 errors.append(f"{pname}/{tid}: invalid evidence_type '{ev_type}'")
             if ev_cfg.get("forbid_marketing_only_final_tag", True):
                 if mkt_only or ev_type not in non_mkt_types:
                     errors.append(f"{pname}/{tid}: marketing-only evidence forbidden for final tag")
-            if not ev_src:
-                errors.append(f"{pname}/{tid}: missing evidence_source_id")
             if not ev_quote:
                 errors.append(f"{pname}/{tid}: missing evidence_quote")
             elif len(ev_quote.split()) > int(ev_cfg.get("max_evidence_quote_words", 40)):
@@ -302,12 +390,6 @@ def cmd_validate_tags(args) -> int:
             cnt = slot_counts[axis_name]
             if cnt < int(axis_rule["min"]) or cnt > int(axis_rule["max"]):
                 errors.append(f"{pname}: slot '{axis_name}' count {cnt} outside [{axis_rule['min']}, {axis_rule['max']}]")
-
-        # Visual check requirement
-        shots_rev = prod.get("screenshots_reviewed") or []
-        avail_shots = len((roster_map.get(uid) or {}).get("screenshot_files") or [])
-        if ev_cfg.get("presentation_slot_requires_visual_check", True) and avail_shots > 0 and len(shots_rev) == 0:
-            errors.append(f"{pname}: screenshots_reviewed is empty while {avail_shots} local screenshots exist")
 
         if ev_cfg.get("require_excluded_near_tags", True):
             excl = prod.get("excluded_near_tags")
@@ -354,7 +436,7 @@ def cmd_sample(args) -> int:
     cfg = load_blacklist_cfg()
     mode_cfg = cfg["mode_thresholds"][args.preset]
     proto = cfg["blind_retest_protocol"]
-    strip_keys = set(proto["strip_input_fields"]) | {NARRATIVE_AXIS}
+    strip_keys = set(proto["strip_input_fields"]) | {INTENSITY_AXIS, NARRATIVE_AXIS, "narrative_evidence"}
 
     bundle = read(Path(args.bundle).resolve())
     bundle_map = {str(p["unified_app_id"]): p for p in _extract_product_list(bundle)}
@@ -451,7 +533,7 @@ def cmd_evaluate(args) -> int:
     comparisons = []
     disagreements = []
     axes = tuple(cfg["slots"]["axes"])
-    match_counts = dict.fromkeys((*axes, NARRATIVE_AXIS), 0)
+    match_counts = dict.fromkeys((*axes, INTENSITY_AXIS, NARRATIVE_AXIS), 0)
     overlaps = []
     colliding_pairs = {axis: defaultdict(int) for axis in match_counts}
     allowed_narratives = cfg[NARRATIVE_AXIS]["controlled_enum"]
@@ -475,6 +557,8 @@ def cmd_evaluate(args) -> int:
         b_set = {t["tag_id"] for t in b_tags}
         p_slots[NARRATIVE_AXIS] = _checked_narrative(pprod, allowed_narratives)
         b_slots[NARRATIVE_AXIS] = _checked_narrative(bprod, allowed_narratives)
+        p_slots[INTENSITY_AXIS] = _checked_narrative_intensity(pprod, cfg)
+        b_slots[INTENSITY_AXIS] = _checked_narrative_intensity(bprod, cfg)
 
         axis_matches = {}
         for axis in match_counts:
@@ -486,7 +570,7 @@ def cmd_evaluate(args) -> int:
             elif first and second:
                 colliding_pairs[axis][" <-> ".join(sorted((first, second)))] += 1
 
-        denom = min(len(p_set), len(b_set))
+        denom = len(p_set | b_set)
         overlap = (len(p_set & b_set) / denom) if denom > 0 else 0.0
         overlaps.append(overlap)
 
@@ -499,6 +583,12 @@ def cmd_evaluate(args) -> int:
             "primary_presentation": p_slots.get("presentation"),
             "blind_presentation": b_slots.get("presentation"),
             "presentation_match": axis_matches["presentation"],
+            "primary_fusion": p_slots.get("fusion_secondary"),
+            "blind_fusion": b_slots.get("fusion_secondary"),
+            "fusion_match": axis_matches["fusion_secondary"],
+            "primary_narrative_intensity": p_slots[INTENSITY_AXIS],
+            "blind_narrative_intensity": b_slots[INTENSITY_AXIS],
+            "narrative_intensity_match": axis_matches[INTENSITY_AXIS],
             "primary_narrative_motif": p_slots[NARRATIVE_AXIS],
             "blind_narrative_motif": b_slots[NARRATIVE_AXIS],
             "narrative_match": axis_matches[NARRATIVE_AXIS],
@@ -515,8 +605,12 @@ def cmd_evaluate(args) -> int:
     theme_rate = agreement["theme_primary"]
     mean_overlap = (sum(overlaps) / n_eval) if n_eval else 0.0
     theme_min = float(mode_cfg["theme_primary_agreement_min"])
+    presentation_min = float(mode_cfg["presentation_agreement_min"])
     overlap_min = float(mode_cfg["tag_set_overlap_min"])
-    passed_thresholds = (not errors) and (theme_rate >= theme_min) and (mean_overlap >= overlap_min)
+    passed_thresholds = (
+        not errors and theme_rate >= theme_min and agreement["presentation"] >= presentation_min
+        and mean_overlap >= overlap_min
+    )
 
     low_conf = [
         {"unified_app_id": str(p["unified_app_id"]), "app_name": p.get("app_name"), "tags": p.get("tags")}
@@ -531,8 +625,12 @@ def cmd_evaluate(args) -> int:
         "sample_required": required_n,
         "theme_primary_agreement": round(theme_rate, 4),
         "presentation_agreement": round(agreement["presentation"], 4),
+        "fusion_agreement": round(agreement["fusion_secondary"], 4),
+        "narrative_intensity_agreement": round(agreement[INTENSITY_AXIS], 4),
+        "narrative_motif_agreement": round(agreement[NARRATIVE_AXIS], 4),
         "narrative_agreement": round(agreement[NARRATIVE_AXIS], 4),
         "theme_primary_threshold": theme_min,
+        "presentation_threshold": presentation_min,
         "mean_tag_set_overlap": round(mean_overlap, 4),
         "tag_set_overlap_threshold": overlap_min,
         "overlap_formula": mode_cfg["overlap_formula"],
@@ -551,6 +649,9 @@ def cmd_evaluate(args) -> int:
         "output": str(out_path),
         "theme_primary_agreement": report["theme_primary_agreement"],
         "presentation_agreement": report["presentation_agreement"],
+        "fusion_agreement": report["fusion_agreement"],
+        "narrative_intensity_agreement": report["narrative_intensity_agreement"],
+        "narrative_motif_agreement": report["narrative_motif_agreement"],
         "narrative_agreement": report["narrative_agreement"],
         "colliding_pairs_by_axis": report["colliding_pairs_by_axis"],
         "mean_tag_set_overlap": report["mean_tag_set_overlap"],
@@ -573,9 +674,10 @@ def cmd_finalize(args) -> int:
     max_unresolved_low = int(cfg["mode_thresholds"][preset].get("max_unresolved_low_confidence", 0))
 
     if not qc.get("passed"):
-        raise ValueError("cannot finalize tagged_corpus before blind QC passes both thresholds")
+        raise ValueError("cannot finalize tagged_corpus before blind QC passes its thresholds")
 
     adjudications = {}
+    adj_raw = None
     if args.adjudications:
         adj_path = Path(args.adjudications).resolve()
         if adj_path.is_file():
@@ -587,7 +689,19 @@ def cmd_finalize(args) -> int:
                     if uid:
                         adjudications[uid] = item
             elif isinstance(adj_items, dict):
-                adjudications = {str(k): v for k, v in adj_items.items()}
+                adjudications = {
+                    str(k): v for k, v in adj_items.items()
+                    if adj_items is not adj_raw or k != "adjudicated_by"
+                }
+
+    required_matches = ("theme_match", "presentation_match", "fusion_match", "narrative_intensity_match")
+    unresolved_diffs = [
+        d["unified_app_id"] for d in qc.get("disagreements", [])
+        if any(d.get(key) is False for key in required_matches)
+        and not isinstance(adjudications.get(str(d["unified_app_id"])), dict)
+    ]
+    if unresolved_diffs:
+        raise ValueError(f"unresolved blind disagreements require explicit adjudication: {unresolved_diffs}")
 
     applied_log = []
     unresolved_low = []
@@ -595,13 +709,18 @@ def cmd_finalize(args) -> int:
         uid = str(prod["unified_app_id"])
         if uid in adjudications:
             dec = adjudications[uid]
+            if not isinstance(dec, dict):
+                raise ValueError(f"{uid}: adjudication must be an object")
+            dec_by = str(dec.get("adjudicated_by") or (adj_raw.get("adjudicated_by") if isinstance(adj_raw, dict) else "") or "human")
             if isinstance(dec.get("final_tags"), list) and dec["final_tags"]:
                 for t in dec["final_tags"]:
                     if t.get("tag_id") not in vocab_map:
                         raise ValueError(f"adjudication uses unknown tag_id: {t.get('tag_id')}")
                 prod["tags"] = dec["final_tags"]
-            prod["adjudicated_by_human"] = True
-            prod["adjudication_note"] = str(dec.get("note") or dec.get("decision") or "人工复核确认")
+            prod["adjudicated_by"] = dec_by
+            prod["adjudicated_by_human"] = (dec_by.strip().lower() == "human")
+            default_note = "人工复核确认" if prod["adjudicated_by_human"] else "复核确认"
+            prod["adjudication_note"] = str(dec.get("note") or dec.get("decision") or default_note)
             if prod.get("confidence") == "low":
                 prod["confidence"] = "adjudicated"
             applied_log.append({"unified_app_id": uid, "app_name": prod.get("app_name"), "note": prod["adjudication_note"]})
@@ -612,14 +731,6 @@ def cmd_finalize(args) -> int:
 
     if len(unresolved_low) > max_unresolved_low:
         raise ValueError(f"unresolved low_confidence products remain ({len(unresolved_low)}): {unresolved_low}")
-
-    # Require explicit human decision for theme_primary blind disagreements
-    unresolved_theme_diffs = [
-        d["unified_app_id"] for d in qc.get("disagreements", [])
-        if not d.get("theme_match") and str(d["unified_app_id"]) not in adjudications
-    ]
-    if unresolved_theme_diffs:
-        raise ValueError(f"unresolved theme_primary blind disagreements require adjudication: {unresolved_theme_diffs}")
 
     corpus = {
         "schema_version": "1.0.0",
@@ -638,6 +749,8 @@ def cmd_finalize(args) -> int:
             "sample_evaluated": qc["sample_evaluated"],
             "theme_primary_agreement": qc["theme_primary_agreement"],
             "presentation_agreement": qc.get("presentation_agreement"),
+            "fusion_agreement": qc.get("fusion_agreement"),
+            "narrative_intensity_agreement": qc.get("narrative_intensity_agreement"),
             "narrative_agreement": qc.get("narrative_agreement"),
             "colliding_pairs_by_axis": qc.get("colliding_pairs_by_axis", {}),
             "mean_tag_set_overlap": qc["mean_tag_set_overlap"],
@@ -668,6 +781,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_vt.add_argument("--vocab", required=True)
     p_vt.add_argument("--tags", required=True)
     p_vt.add_argument("--roster", required=True)
+    p_vt.add_argument("--bundle", required=True)
     p_vt.add_argument("--preset", choices=("pilot", "full"), required=True)
     p_vt.set_defaults(func=cmd_validate_tags)
 
@@ -680,14 +794,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_sp.add_argument("--seed", type=int, default=20261124)
     p_sp.set_defaults(func=cmd_sample)
 
-    p_ev = sub.add_parser("evaluate", help="Evaluate blind retest consistency against dual thresholds")
+    p_ev = sub.add_parser("evaluate", help="Evaluate blind retest consistency against agreement and Jaccard thresholds")
     p_ev.add_argument("--tags", required=True)
     p_ev.add_argument("--blind", required=True)
     p_ev.add_argument("--preset", choices=("pilot", "full"), required=True)
     p_ev.add_argument("--output", required=True)
     p_ev.set_defaults(func=cmd_evaluate)
 
-    p_fn = sub.add_parser("finalize", help="Apply human adjudications and freeze tagged_corpus.json")
+    p_fn = sub.add_parser("finalize", help="Apply explicit adjudications and freeze tagged_corpus.json")
     p_fn.add_argument("--vocab", required=True)
     p_fn.add_argument("--tags", required=True)
     p_fn.add_argument("--qc", required=True)

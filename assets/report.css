@@ -222,10 +222,13 @@ pre {
   border: 1px solid transparent;
   transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
+.tag-pill { white-space: nowrap; max-width: 100%; }
 .tag-pill:hover { text-decoration: none; filter: brightness(0.96); }
 .axis-theme_primary { background: var(--blue-bg); color: var(--blue); border-color: var(--blue-line); }
 .axis-presentation { background: var(--purple-bg); color: var(--purple); border-color: var(--purple-line); }
 .axis-fusion_secondary { background: var(--teal-bg); color: var(--teal); border-color: var(--teal-line); }
+.axis-narrative_intensity { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-line); }
+.axis-narrative_motif { background: #edf2f7; color: #43566c; border-color: #d5dfea; }
 
 /* Metric values & citations */
 .metric-value { font-variant-numeric: tabular-nums; font-weight: 650; }
@@ -276,13 +279,15 @@ figure {
   padding: 14px 16px;
   overflow: hidden;
 }
-figure img { display: block; max-width: 100%; height: auto; margin: 0 auto; }
-.figure-title { font-size: 13.5px; font-weight: 650; margin-bottom: 8px; color: var(--ink); }
+figure img { display: block; width: 100%; max-width: 960px; height: auto; margin: 0 auto; }
+.figure-title { text-align: center; font-size: 14px; font-weight: 650; margin-bottom: 8px; color: var(--ink); }
 figcaption {
-  font-size: 11px;
+  font-size: 12px;
+  text-align: center;
+  max-width: 92%;
   color: var(--muted);
   line-height: 1.65;
-  margin-top: 10px;
+  margin: 10px auto 0;
   padding-top: 8px;
   border-top: 1px solid var(--line-soft);
   overflow-wrap: anywhere;
@@ -412,8 +417,7 @@ html.js-enabled .dashboard-filter-bar { display: block; }
 .tab-panel { display: none; scroll-margin-top: 20px; }
 .tab-panel:target { display: block; }
 
-#tab-radio-merge_2:checked ~ .tab-bar label[for="tab-radio-merge_2"],
-#tab-radio-merge_3:checked ~ .tab-bar label[for="tab-radio-merge_3"],
+#tab-radio-merge:checked ~ .tab-bar label[for="tab-radio-merge"],
 #tab-radio-match_3:checked ~ .tab-bar label[for="tab-radio-match_3"],
 #tab-radio-simulation:checked ~ .tab-bar label[for="tab-radio-simulation"],
 #tab-radio-hybrid_puzzle:checked ~ .tab-bar label[for="tab-radio-hybrid_puzzle"],
@@ -422,8 +426,7 @@ html.js-enabled .dashboard-filter-bar { display: block; }
   border-color: var(--accent);
   color: #ffffff;
 }
-#tab-radio-merge_2:checked ~ .tab-panels .panel-merge_2,
-#tab-radio-merge_3:checked ~ .tab-panels .panel-merge_3,
+#tab-radio-merge:checked ~ .tab-panels .panel-merge,
 #tab-radio-match_3:checked ~ .tab-panels .panel-match_3,
 #tab-radio-simulation:checked ~ .tab-panels .panel-simulation,
 #tab-radio-hybrid_puzzle:checked ~ .tab-panels .panel-hybrid_puzzle,
@@ -486,14 +489,7 @@ html.js-enabled .dashboard-filter-bar { display: block; }
   object-fit: cover;
   border: 1px solid var(--line);
 }
-.card-top figure.case-icon figcaption {
-  margin-top: 2px;
-  padding-top: 0;
-  border-top: 0;
-  font-size: 9px;
-  line-height: 1.25;
-  text-align: center;
-}
+.card-top figure.case-icon figcaption { display: none; }
 .icon-placeholder {
   flex: 0 0 48px;
   width: 48px;
@@ -530,6 +526,13 @@ html.js-enabled .dashboard-filter-bar { display: block; }
   line-height: 1.35;
 }
 .card-brief { font-size: 12.5px; color: #3d5259; margin: 6px 0 8px; }
+.product-card h4, .new-head strong, .card-brief {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: break-word;
+}
 .sub-block { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--line); font-size: 12.5px; }
 
 /* Section 3: High-Growth New Releases */
@@ -543,15 +546,16 @@ html.js-enabled .dashboard-filter-bar { display: block; }
   padding: 4px 10px;
   margin-bottom: 12px;
 }
-.new-app-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; margin-bottom: 14px; }
+.new-app-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 14px; }
 .new-app-card {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 12px 14px;
   background: #fcfdfc;
+  min-width: 0;
   scroll-margin-top: 22px;
 }
-.new-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-bottom: 8px; }
+.new-head .card-badges { margin: 4px 0 0; }
 .new-metrics { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: #364b52; margin-bottom: 6px; }
 
 /* Section 4: 4-Tier Supply-Gap Heatmap Matrix & Opportunity Cards */
@@ -581,7 +585,7 @@ td.heat-missing { background: #fbf8f1; color: #997942; text-align: center; }
 
 .opp-detail-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
   gap: 16px;
   margin-top: 18px;
 }
@@ -680,8 +684,12 @@ td.heat-missing { background: #fbf8f1; color: #997942; text-align: center; }
 }
 @media (max-width: 820px) {
   .product-grid, .film-grid, .vocab-grid, .opp-detail-grid, .opp-cols { grid-template-columns: 1fr; }
+  .new-app-list { grid-template-columns: 1fr; }
   .mini-kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dash-section { padding: 16px; }
+}
+@media (max-width: 540px) {
+  .kpi-grid { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 

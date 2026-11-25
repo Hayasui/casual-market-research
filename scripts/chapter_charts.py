@@ -1,7 +1,9 @@
 """Offline chart components for market and case chapters."""
+import math
 import re
 from collections import defaultdict
 from datetime import date, timedelta
+from unicodedata import east_asian_width
 
 from common import digest, ident, months
 from report_view import E, chart_svg, label, members_text, short_number
@@ -11,16 +13,59 @@ from scopes import decimal_value
 COLORS = ("#167666", "#ae5845", "#375c96", "#7a548e", "#946012", "#526a38")
 
 
+def _nice_limit(raw_max, ticks=5):
+    """Round a nonnegative maximum up to a whole number of nice steps."""
+    raw_max = raw_max or 1
+    magnitude = 10 ** math.floor(math.log10(raw_max / ticks))
+    return next(step * magnitude * ticks for step in (1, 2, 2.5, 5, 10)
+                if step * magnitude * ticks >= raw_max)
+
+
+def clean_item_name(text: str, max_len: int) -> str:
+    name = text.strip()
+    if len(name) <= max_len:
+        return name
+    name = re.split(r"[:：]| [-–] ", name, maxsplit=1)[0].strip() or name
+    if len(name) <= max_len:
+        return name
+    if max_len <= 0:
+        return ""
+    limit = max_len - 1
+    prefix = name[:limit]
+    if name[limit].isspace() or prefix[-1:].isspace():
+        return prefix.rstrip() + "…"
+    words = prefix.rsplit(maxsplit=1)
+    if len(words) > 1:
+        return words[0] + "…"
+    for match in re.finditer(r"[A-Za-z0-9]+(?:['’_-][A-Za-z0-9]+)*", name):
+        if match.start() < limit < match.end():
+            prefix = name[:match.start()]
+            break
+    return prefix.rstrip() + "…"
+
+
 def plot(title, categories, traces, units, *, limits=None, events=()):
     """Draw precomputed values. None leaves a gap; markers use the shared x axis."""
-    left, right, top, bottom = 72, 886, 88, 300
+    legend_traces = list(enumerate(traces))
+    axis_units = units
+    if len(units) == 2:
+        legend_traces.sort(key=lambda item: item[1]["axis"])
+        axis_units = ("净收入（USD）", "下载量（次）")
+    legend_gap = 22
+    legend = []
+    for index, trace in legend_traces:
+        label_width = sum(13 if east_asian_width(char) in "WF" else 8 for char in trace["label"])
+        legend.append((trace, COLORS[index % len(COLORS)], 24 + label_width))
+    legend_width = sum(item_width for _, _, item_width in legend) + legend_gap * max(0, len(legend) - 1)
+    canvas_width = max(960, legend_width + 40)
+    left, right, top, bottom = 72, canvas_width - 74, 88, 300
     width = (right - left) / len(categories)
-    height = 365 + 22 * len(traces)
-    pieces = [f'<svg xmlns="http://www.w3.org/2000/svg" width="960" height="{height}" viewBox="0 0 960 {height}" role="img">',
-              f'<title>{E(title)}</title><rect width="960" height="{height}" fill="white"/>',
+    height = 374
+    pieces = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{canvas_width}" height="{height}" viewBox="0 0 {canvas_width} {height}" role="img">',
+              f'<title>{E(title)}</title><rect width="{canvas_width}" height="{height}" fill="white"/>',
               '<g font-family="Segoe UI,Microsoft YaHei,sans-serif" fill="#253b37">']
-    maxima = limits or [max([1, *(v for t in traces if t["axis"] == axis
-                                 for v in t["values"].values() if v is not None)]) * 1.1
+    maxima = limits or [_nice_limit(max((v for t in traces if t["axis"] == axis
+                                        for v in t["values"].values() if v is not None), default=0))
                         for axis in range(len(units))]
 
     def y(value, axis):
@@ -31,15 +76,17 @@ def plot(title, categories, traces, units, *, limits=None, events=()):
         pieces.append(f'<path d="M{left} {yy}H{right}" stroke="#e0e8e4"/>')
         for axis, maximum in enumerate(maxima):
             xx, align = (left - 8, "end") if axis == 0 else (right + 8, "start")
-            pieces.append(f'<text x="{xx}" y="{yy+4}" text-anchor="{align}" font-size="11">{short_number(maximum*i/5)}</text>')
-    for axis, unit in enumerate(units):
+            tick = maximum * i / 5
+            tick_text = f"{tick:g}" if 0 < tick < 1 else short_number(tick)
+            pieces.append(f'<text x="{xx}" y="{yy+4}" text-anchor="{align}" font-size="12">{tick_text}</text>')
+    for axis, unit in enumerate(axis_units):
         xx, align = (left, "start") if axis == 0 else (right, "end")
-        pieces.append(f'<text x="{xx}" y="48" text-anchor="{align}" font-size="13">{E(unit)}</text>')
+        pieces.append(f'<text x="{xx}" y="{top - 32}" text-anchor="{align}" font-size="13">{E(unit)}</text>')
 
     positions = {key: left + (i + .5) * width for i, key in enumerate(categories)}
     for i, key in enumerate(categories):
         if i % max(1, (len(categories)+9)//10) == 0:
-            pieces.append(f'<text x="{positions[key]:.2f}" y="323" text-anchor="middle" font-size="11">{E(key)}</text>')
+            pieces.append(f'<text x="{positions[key]:.2f}" y="323" text-anchor="middle" font-size="12">{E(key)}</text>')
     bars = [t for t in traces if t["bar"]]
     bar_width = min(52, width * .72 / max(1, len(bars)))
     for n, trace in enumerate(traces):
@@ -63,13 +110,20 @@ def plot(title, categories, traces, units, *, limits=None, events=()):
                     pieces.append(f'<path d="M{px:.2f} {py:.2f}L{x:.2f} {yy:.2f}" stroke="{color}" stroke-width="2.5"/>')
                 pieces.append(f'<circle cx="{x:.2f}" cy="{yy:.2f}" r="4" fill="{color}"><title>{E(tooltip)}</title></circle>')
                 previous = (x, yy)
-        legend_y = 356 + 22 * n
-        pieces.append(f'<text x="{left}" y="{legend_y}" font-size="13" fill="{color}">{E(trace["label"])}</text>')
     for n, event in enumerate(events, 1):
         x = positions[event["month"]]
         pieces.append(f'<path d="M{x:.2f} {top}V{bottom}" stroke="#956e45" stroke-dasharray="4 4"/>'
                       f'<circle cx="{x:.2f}" cy="72" r="11" fill="#956e45"/>'
-                      f'<text x="{x:.2f}" y="76" fill="white" text-anchor="middle" font-size="11">{n}</text>')
+                      f'<text x="{x:.2f}" y="76" fill="white" text-anchor="middle" font-size="12">{n}</text>')
+    legend_x, legend_y = (canvas_width - legend_width) / 2, height - 22
+    for trace, color, item_width in legend:
+        if trace["bar"]:
+            pieces.append(f'<rect x="{legend_x:.2f}" y="{legend_y - 6}" width="12" height="12" fill="{color}"/>')
+        else:
+            pieces.append(f'<line x1="{legend_x:.2f}" y1="{legend_y}" x2="{legend_x + 18:.2f}" y2="{legend_y}" stroke="{color}" stroke-width="2.5"/>'
+                          f'<circle cx="{legend_x + 9:.2f}" cy="{legend_y}" r="3.5" fill="{color}"/>')
+        pieces.append(f'<text x="{legend_x + 24:.2f}" y="{legend_y + 4}" font-size="13">{E(trace["label"])}</text>')
+        legend_x += item_width + legend_gap
     return ("".join(pieces) + "</g></svg>").encode()
 
 
@@ -254,6 +308,48 @@ def _match_period(pool, selector, period):
     return rows
 
 
+def horizontal_rank_bars(title, items, unit, shares=None):
+    """Draw ranks in input order, with optional shares expressed as percentages."""
+    left, right, row_h = 250, 820, 34
+    top = 48
+    axis_y = top + row_h * max(1, len(items))
+    height = axis_y + 47
+    maximum = _nice_limit(max((value for _, value in items), default=0))
+    is_usd = "USD" in unit.upper()
+    pieces = [f'<svg xmlns="http://www.w3.org/2000/svg" width="960" height="{height}" viewBox="0 0 960 {height}" role="img">',
+              f'<title>{E(title)}</title><rect width="960" height="{height}" fill="white"/>',
+              '<g font-family="Segoe UI,Microsoft YaHei,sans-serif" fill="#253b37">',
+              f'<text x="{right}" y="30" text-anchor="end" font-size="12">{E(unit)}</text>']
+    for tick in range(6):
+        x = left + (right - left) * tick / 5
+        value = maximum * tick / 5
+        tick_text = f"{value:g}" if 0 < value < 1 else short_number(value)
+        pieces.append(f'<path d="M{x:.2f} {top}V{axis_y}" stroke="#e0e8e4"/>'
+                      f'<text x="{x:.2f}" y="{axis_y + 20}" text-anchor="middle" font-size="12">{tick_text}</text>')
+    pieces.append(f'<path d="M{left} {axis_y}H{right}" stroke="#c5d2cc"/>')
+
+    for index, (name, value) in enumerate(items):
+        y = top + row_h * index + row_h / 2
+        bar_width = (right - left) * (value / maximum)
+        display_name = clean_item_name(name, 28)
+        name_width = sum(12 if east_asian_width(char) in "WF" else 7 for char in display_name)
+        fit = ' textLength="226" lengthAdjust="spacingAndGlyphs"' if name_width > 226 else ""
+        amount = short_number(value)
+        if is_usd:
+            for scale, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+                if value >= scale:
+                    amount = f"{value / scale:,.1f}{suffix}"
+                    break
+            amount = "$" + amount
+        if shares is not None and shares[index] is not None:
+            amount += f" ({shares[index]:.1f}%)"
+        tooltip = f"{name} · {value:,.2f} {unit}"
+        pieces.append(f'<text x="{left - 12}" y="{y + 4:.2f}" text-anchor="end" font-size="12"{fit}>{E(display_name)}</text>'
+                      f'<rect x="{left}" y="{y - 9:.2f}" width="{bar_width:.2f}" height="18" fill="{COLORS[0]}"><title>{E(tooltip)}</title></rect>'
+                      f'<text x="{left + bar_width + 8:.2f}" y="{y + 4:.2f}" font-size="12">{E(amount)}</text>')
+    return ("".join(pieces) + "</g></svg>").encode()
+
+
 def rank_chart(spec, metrics, labels):
     selectors = spec.get("selectors") or []
     if not selectors:
@@ -269,27 +365,28 @@ def rank_chart(spec, metrics, labels):
         picked.append(rows[0])
     if len({row.get("scope_signature") for row in picked}) != 1 or len({row.get("metric") for row in picked}) != 1:
         raise ValueError("rank chart series have incompatible scopes")
-    ordered = sorted(zip(selectors, picked), key=lambda item: item[1]["value"], reverse=True)
-    names, seen = [], {}
-    for selector, row in ordered:
+    ordered = sorted(picked, key=lambda row: row["value"], reverse=True)
+    items, seen = [], set()
+    for row in ordered:
         name = (labels or {}).get(row.get("entity_id"), row.get("entity_id"))
         if name in seen:
             name = f"{name}（{row.get('entity_id')}）"
-        seen[name] = row
-        names.append(name)
-    trace = dict(label=label(picked[0]["metric"]), axis=0, bar=True, values={name: row["value"] for name, (_, row) in zip(names, ordered)})
+        seen.add(name)
+        items.append((name, row["value"]))
     first = picked[0]
     caption = ("Sensor Tower 估算 · 按数值降序 · " + members_text(first.get("geography"), "countries") + " · "
                + members_text(first.get("store_scope"), "stores") + "。")
     denominator = spec.get("denominator")
+    shares = None
     if denominator:
         base = _match_period(pool, denominator, spec.get("period"))
         if len(base) == 1 and base[0]["value"]:
-            shares = "；".join(f"{name} {row['value'] / base[0]['value'] * 100:.1f}%" for name, (_, row) in zip(names, ordered))
-            caption += "份额分母为所选品类合计：" + shares + "。"
+            shares = [value / base[0]["value"] * 100 for _, value in items]
+            caption += "份额分母为所选品类合计：" + "；".join(
+                f"{name} {share:.1f}%" for (name, _), share in zip(items, shares)) + "。"
         elif len(base) == 1:
             caption += "份额分母为零，只保留绝对额。"
-    return plot(spec["title"], names, [trace], [label(first.get("unit", ""))]), [row for _, row in ordered], caption, []
+    return horizontal_rank_bars(spec["title"], items, label(first.get("unit", "")), shares), ordered, caption, []
 
 
 def signed_bars(title, items, unit):

@@ -55,22 +55,22 @@ def chart_svg(cells, title, series):
              '<rect width="960" height="390" fill="#ffffff"/>',
              '<g font-family="Segoe UI,Microsoft YaHei,sans-serif">',
              f'<text x="27" y="31" font-size="18" font-weight="600" fill="#172b32">{E(title[:34] + ("…" if len(title) > 34 else ""))}</text>',
-             f'<text x="27" y="56" font-size="11" fill="#71877b">估算 · {"同比变化（%）" if series == "yoy" else label(usable[0]["unit"])}</text>']
+             f'<text x="27" y="56" font-size="12" fill="#71877b">估算 · {"同比变化（%）" if series == "yoy" else label(usable[0]["unit"])}</text>']
     for tick in range(round(span / tick_step) + 1):
         value = minimum + tick_step * tick
         yy = y(value)
         parts += [f'<line x1="{left}" x2="{right}" y1="{yy:.2f}" y2="{yy:.2f}" stroke="#e7eee8" stroke-dasharray="3 5"/>',
-                  f'<text x="{left-13}" y="{yy+4:.2f}" text-anchor="end" font-size="10" fill="#87998e">{E(short_number(value))}</text>']
+                  f'<text x="{left-13}" y="{yy+4:.2f}" text-anchor="end" font-size="12" fill="#87998e">{E(short_number(value))}</text>']
     zero = y(0)
     parts.append(f'<line x1="{left}" x2="{right}" y1="{zero:.2f}" y2="{zero:.2f}" stroke="#becfc3"/>')
     step = (right - left) / len(cells)
     width = min(64, step * .47)
     for n, cell in enumerate(cells):
         x = left + (n + .5) * step
-        parts.append(f'<text x="{x:.2f}" y="333" text-anchor="middle" font-size="11" fill="#71877b">{E(cell["month"])}</text>')
+        parts.append(f'<text x="{x:.2f}" y="333" text-anchor="middle" font-size="12" fill="#71877b">{E(cell["month"])}</text>')
         if cell["value"] is None:
             parts += [f'<rect x="{x-width/2:.2f}" y="{zero-28:.2f}" width="{width}" height="28" rx="5" fill="#fbf6eb" stroke="#e4d8bc" stroke-dasharray="3 3"/>',
-                      f'<text x="{x:.2f}" y="{zero-10:.2f}" text-anchor="middle" font-size="10" fill="#986524">缺失</text>']
+                      f'<text x="{x:.2f}" y="{zero-10:.2f}" text-anchor="middle" font-size="12" fill="#986524">缺失</text>']
             continue
         value = cell["value"]
         value_y = y(value)
@@ -79,5 +79,5 @@ def chart_svg(cells, title, series):
         full = f'{cell["month"]}：{value:,.2f} {cell["unit"]}（估算）'
         parts += [f'<g><title>{E(full)}</title><rect x="{x-width/2:.2f}" y="{min(zero,value_y):.2f}" width="{width}" height="{max(.8,abs(zero-value_y)):.2f}" rx="4" fill="{color}"/>',
                   f'<text x="{x:.2f}" y="{label_y:.2f}" text-anchor="middle" font-size="12" font-weight="600" fill="#294d3c">{E(short_number(value))}{"%" if series == "yoy" else ""}</text></g>']
-    parts.append('<text x="27" y="373" font-size="10" fill="#87998e">缺失单独标注 · 未插值或外推 · 详细来源与统计范围见图注及数值表</text></g></svg>')
+    parts.append('<text x="27" y="373" font-size="12" fill="#87998e">缺失单独标注 · 未插值或外推 · 详细来源与统计范围见图注及数值表</text></g></svg>')
     return "".join(parts).encode("utf-8")

@@ -169,6 +169,29 @@ def normalize_name(name: str) -> str:
     return re.sub(r"[\W_]+", "", str(name or "").lower())
 
 
+def clean_item_name(text: str, max_len: int) -> str:
+    name = text.strip()
+    if len(name) <= max_len:
+        return name
+    name = re.split(r"[:：]| [-–] ", name, maxsplit=1)[0].strip() or name
+    if len(name) <= max_len:
+        return name
+    if max_len <= 0:
+        return ""
+    limit = max_len - 1
+    prefix = name[:limit]
+    if name[limit].isspace() or prefix[-1:].isspace():
+        return prefix.rstrip() + "…"
+    words = prefix.rsplit(maxsplit=1)
+    if len(words) > 1:
+        return words[0] + "…"
+    for match in re.finditer(r"[A-Za-z0-9]+(?:['’_-][A-Za-z0-9]+)*", name):
+        if match.start() < limit < match.end():
+            prefix = name[:match.start()]
+            break
+    return prefix.rstrip() + "…"
+
+
 def parse_date_flexible(raw_val, *, require_day: bool = False) -> str | None:
     if not raw_val or not isinstance(raw_val, str):
         return None
@@ -225,9 +248,9 @@ def cmd_init_run(args) -> int:
     ):
         (out_dir / rel).mkdir(parents=True, exist_ok=True)
     default_title = (
-        f"二合品类题材与呈现 Tag 市场研究看板（{win['months'][0]} 至 {win['months'][-1]}）"
+        f"合成品类题材与呈现 Tag 市场研究看板（{win['months'][0]} 至 {win['months'][-1]}）"
         if args.preset == "pilot"
-        else f"休闲游戏五品类题材与呈现 Tag 市场研究看板（{win['months'][0]} 至 {win['months'][-1]}）"
+        else f"休闲游戏四品类题材与呈现 Tag 市场研究看板（{win['months'][0]} 至 {win['months'][-1]}）"
     )
     state = {
         "schema_version": "1.0.0",
@@ -240,6 +263,7 @@ def cmd_init_run(args) -> int:
         "recent_3m": win["recent_3m"],
         "new_release_months": win["new_release_months"],
         "new_release_cutoff_date": win["new_release_cutoff_date"],
+        "recommended_daily_query_start_date": shift_ym(win["new_release_cutoff_date"][:7], -2) + "-01",
         "enabled_subgenres": list(preset_cfg["enabled_subgenres"]),
         "market_overview_reference_subgenres": list(preset_cfg["market_overview_reference_subgenres"]),
         "html_script_mode": preset_cfg["html_script_mode"],
@@ -490,10 +514,12 @@ def _st_metric_value(row, metric):
     return next((decimal_value(row[key]) for key in keys if row.get(key) is not None), None)
 
 
-def _load_product_series(manifest, out_dir, window, win_months, retrieved_at, st_sources):
+def _load_product_series(manifest, out_dir, window, win_months, retrieved_at, st_sources, *, cutoff_date):
     monthly = {metric: {} for metric in ("revenue", "downloads")}
     source_ids = {metric: {} for metric in monthly}
     first_positive = {}
+    daily_min_date = None
+    daily_query_start = manifest.get("st_daily_query_start_date")
     for metric in monthly:
         for idx, fpath in enumerate(_st_metric_files(manifest.get("st_performance_metrics") or {}, metric), 1):
             path, raw = _load_checked_raw(out_dir, fpath)
@@ -522,18 +548,29 @@ def _load_product_series(manifest, out_dir, window, win_months, retrieved_at, st
             for row in raw.get("data", []) if isinstance(raw, dict) else raw:
                 uid = str(row.get("unified_app_id") or "")
                 day = parse_date_flexible(row.get("date"), require_day=True)
+                if day and (daily_min_date is None or day < daily_min_date):
+                    daily_min_date = day
                 val = _st_metric_value(row, metric)
                 if uid and day and day <= window["end"] and val is not None and val > 0:
                     first_positive[uid] = min(day, first_positive.get(uid, day))
-    return monthly, source_ids, first_positive
+    if daily_min_date is not None and daily_min_date >= cutoff_date:
+        raise ValueError(
+            f"st_daily_performance_metrics coverage starts at {daily_min_date}, must be earlier than cutoff_date {cutoff_date}"
+        )
+    return monthly, source_ids, first_positive, daily_min_date, daily_query_start
 
 
-def _load_union_audit(path, out_dir, sg_id, window, monthly, source_ids, retrieved_at, st_sources):
+def _load_union_audit(path, out_dir, sg_id, window, monthly, source_ids, retrieved_at, st_sources, *, cutoff_date):
     abs_path, audit = _load_checked_raw(out_dir, path)
     expected = {"subgenre_id": sg_id, "window_start": window["start"], "window_end": window["end"]}
     for key, value in expected.items():
         if key in audit and audit[key] != value:
             raise ValueError(f"union_audit {key}={audit[key]!r}; expected {value!r}")
+    daily_query_start = audit.get("daily_query_start_date")
+    if daily_query_start and daily_query_start >= cutoff_date:
+        raise ValueError(
+            f"union_audit daily_query_start_date {daily_query_start} must be earlier than cutoff_date {cutoff_date}"
+        )
     candidates = audit["candidates"]
     if not isinstance(candidates, list):
         raise ValueError("union_audit candidates must be an array")
@@ -569,6 +606,8 @@ def _audit_new_candidate(uid, row, launch_date, monthly, prior_months, recent_mo
         raw = monthly[metric].get(uid, {})
         series = {m: raw.get(m) for m in win_months}
         for month, value in series.items():
+            if month in pre_launch and value is not None and value > 0:
+                raise ValueError(f"{uid}: pre-launch month {month} has positive {metric}={value}")
             if value is None and month in pre_launch:
                 series[month] = Decimal("0.00")
                 zeros.add(month)
@@ -660,16 +699,23 @@ def cmd_build(args) -> int:
                 if val is not None:
                     entity_monthly_avail.setdefault(("category", eid, metric), set()).add(ym)
 
-    # 2. Subgenre market size + merge_combined pre-aggregation
+    # 2. Subgenre market size and combined Merge audit
     sub_market_files = manifest.get("subgenre_market_size", {})
     sub_monthly_cache: dict[tuple[str, str], dict[str, Decimal]] = {}
     sub_source_ids: dict[tuple[str, str], str] = {}
+    subgenre_breakdown_audit: dict[str, dict] = {}
     ref_subgenres = list(preset_cfg["market_overview_reference_subgenres"])
     for sg_id in ref_subgenres:
         sg_cfg = subgenres_cfg["subgenres"][sg_id]
         sg_files = sub_market_files.get(sg_id, {})
         allowed = set(sg_cfg["st_filter"].get("market_size_target_values") or []) or None
         excluded = {e["value"] for e in sg_cfg.get("excluded_sub_genres", [])} or None
+        scope_limitations = None
+        if sg_id == "merge":
+            scope_limitations = ["由 Sensor Tower Match Merge 2 与 Match Merge 3 同口径月度估算值合并得出，非 ST 原生单一分类"]
+            merge_components = ("Match Merge 2", "Match Merge 3")
+            merge_audit = {label: {} for label in merge_components}
+            subgenre_breakdown_audit[sg_id] = merge_audit
         for metric in ("revenue", "downloads"):
             fpath = sg_files.get(metric)
             if not fpath:
@@ -686,17 +732,42 @@ def cmd_build(args) -> int:
                 retrieved_at,
                 raw_rel=safe_rel_path(abs_p, out_dir),
             )
-            monthly = _extract_market_monthly(raw_obj, metric, target_field="game_sub_genre",
-                                              allowed_values=allowed, excluded_values=excluded)
+            if sg_id == "merge":
+                raw_rows = raw_obj.get("data", []) if isinstance(raw_obj, dict) else raw_obj
+                if not isinstance(raw_rows, list):
+                    raise ValueError("market size raw response must contain list data")
+                component_monthly = {}
+                for label in merge_components:
+                    component_rows = [row for row in raw_rows if isinstance(row, dict) and row.get("game_sub_genre") == label]
+                    if not component_rows:
+                        raise ValueError(f"merge.{metric} market size missing required {label} rows")
+                    series = _extract_market_monthly(component_rows, metric)
+                    component_monthly[label] = series
+                    monthly_key, total_key = (
+                        ("monthly_revenue_usd", "revenue_6m_usd") if metric == "revenue"
+                        else ("monthly_downloads", "downloads_6m")
+                    )
+                    merge_audit[label][monthly_key] = {ym: number(series[ym]) if ym in series else None for ym in win_months}
+                    merge_audit[label][total_key] = (
+                        number(sum(series[ym] for ym in win_months)) if all(ym in series for ym in win_months) else None
+                    )
+                monthly = {
+                    ym: sum(series[ym] for series in component_monthly.values())
+                    for ym in win_months if all(ym in series for series in component_monthly.values())
+                }
+            else:
+                monthly = _extract_market_monthly(raw_obj, metric, target_field="game_sub_genre",
+                                                  allowed_values=allowed, excluded_values=excluded)
             sub_monthly_cache[(sg_id, metric)] = monthly
             for ym in win_months:
                 val = monthly.get(ym)
                 records.append(_make_st_record(f"rec_{sg_id}_{metric[:3]}_{ym.replace('-', '')}",
-                                               "category", sg_id, metric, ym, val, [src_id], geo_label))
+                                               "category", sg_id, metric, ym, val, [src_id], geo_label,
+                                               scope_limitations=scope_limitations))
                 if val is not None:
                     entity_monthly_avail.setdefault(("category", sg_id, metric), set()).add(ym)
 
-    if preset_cfg.get("include_merge_combined_row", True):
+    if preset_cfg.get("include_merge_combined_row", False) and subgenres_cfg.get("macro_benchmarks", {}).get("merge_combined_reference"):
         mc_cfg = subgenres_cfg["macro_benchmarks"]["merge_combined_reference"]
         comps = mc_cfg["component_subgenres"]
         if all((c, "revenue") in sub_monthly_cache and (c, "downloads") in sub_monthly_cache for c in comps):
@@ -764,16 +835,17 @@ def cmd_build(args) -> int:
     top_app_files = manifest.get("top_apps", {})
     new_app_files = manifest.get("new_apps", {})
     whitelist_resolved = manifest.get("whitelist_resolved", {})
-    monthly, product_source_ids, first_positive = _load_product_series(
-        manifest, out_dir, window, win_months, retrieved_at, st_sources,
+    monthly, product_source_ids, first_positive, daily_min_date, daily_query_start = _load_product_series(
+        manifest, out_dir, window, win_months, retrieved_at, st_sources, cutoff_date=cutoff_date,
     )
     union_files = manifest.get("union_audit") or {}
     union_path = args.union_audit or (union_files if isinstance(union_files, str) else None)
     if union_path:
         resolved_path, union = _load_checked_raw(out_dir, union_path)
-        union_files = {union.get("subgenre_id", "merge_2"): str(resolved_path)}
+        union_files = {union.get("subgenre_id", "merge"): str(resolved_path)}
     union_candidates = {
-        sg_id: _load_union_audit(path, out_dir, sg_id, window, monthly, product_source_ids, retrieved_at, st_sources)
+        sg_id: _load_union_audit(path, out_dir, sg_id, window, monthly, product_source_ids, retrieved_at, st_sources,
+                                 cutoff_date=cutoff_date)
         for sg_id, path in union_files.items() if sg_id in enabled_sgs
     }
     yl_info_map = manifest.get("yilan_app_info") or {}
@@ -1065,7 +1137,7 @@ def cmd_build(args) -> int:
 
     frozen_roster_revenue = complete_revenue(monthly["revenue"], roster_by_uid)
     market_cr10_denominator = complete_revenue(
-        {sg_id: sub_monthly_cache.get((sg_id, "revenue"), {}) for sg_id in ref_subgenres}, ["merge_2"],
+        {sg_id: sub_monthly_cache.get((sg_id, "revenue"), {}) for sg_id in ref_subgenres}, enabled_sgs[:1],
     )
 
     # 6. Per-product metadata enrichment, fake-zero checks, materials, reviews, icons & screenshots
@@ -1109,6 +1181,7 @@ def cmd_build(args) -> int:
 
     for uid, prod in roster_by_uid.items():
         eid = prod["entity_id"]
+        prod["effective_launch_date"] = prod.get("effective_launch_date") or first_positive.get(uid)
         # Attach sub_app_details Game IQ reference if available
         for ios_id in prod["ios_app_ids"]:
             if ios_id in sub_app_tag_overrides:
@@ -1388,6 +1461,9 @@ def cmd_build(args) -> int:
         "excluded_audit": excluded_audit,
         "cross_column_dedup_log": cross_column_dedup_log,
         "new_release_audit": new_release_audit,
+        "daily_min_date": daily_min_date,
+        "daily_query_start": daily_query_start,
+        "subgenre_breakdown_audit": subgenre_breakdown_audit,
         "frozen_roster_6m_revenue_usd": frozen_roster_revenue,
         "market_cr10_denominator_usd": market_cr10_denominator,
         "stats": {
@@ -1409,7 +1485,7 @@ def cmd_build(args) -> int:
     write(out_dir / "research/data/tagging_input_bundle.json", tagging_bundle)
 
     # Chart specs
-    labels_map = {p["entity_id"]: p["app_name"][:28] for p in roster_by_uid.values()}
+    labels_map = {p["entity_id"]: clean_item_name(p["app_name"], 28) for p in roster_by_uid.values()}
     for sg_id, sg_cfg in subgenres_cfg["subgenres"].items():
         labels_map[sg_id] = sg_cfg["display_name"]
     labels_map["merge_combined"] = "合成合计（二合+三合）"
@@ -1436,21 +1512,21 @@ def cmd_build(args) -> int:
 
     for sg_id in enabled_sgs:
         sg_name = subgenres_cfg["subgenres"][sg_id]["display_name"]
-        if sg_id == "merge_2" and all(m in entity_monthly_avail.get(("category", "merge_2", "revenue"), set()) for m in win_months):
+        if sg_id == "merge":
             dual_spec = {
                 "chart": {
-                    "id": "merge_2_dual_axis",
-                    "title": f"二合品类月度净收入与下载趋势（{win_months[0]}–{win_months[-1]}）",
+                    "id": "merge_dual_axis",
+                    "title": f"合成品类月度净收入与下载趋势（{win_months[0]}–{win_months[-1]}）",
                     "kind": "market_dual_axis",
                     "selectors": [
-                        {"entity_type": "category", "entity_id": "merge_2", "country": "global", "platform": "unified", "metric": "revenue"},
-                        {"entity_type": "category", "entity_id": "merge_2", "country": "global", "platform": "unified", "metric": "downloads"},
+                        {"entity_type": "category", "entity_id": "merge", "country": "global", "platform": "unified", "metric": "revenue"},
+                        {"entity_type": "category", "entity_id": "merge", "country": "global", "platform": "unified", "metric": "downloads"},
                     ],
                 },
                 "data": "../data/market_result.json",
                 "labels": labels_map,
             }
-            dp = out_dir / "research/charts/merge_2_dual_axis_spec.json"
+            dp = out_dir / "research/charts/merge_dual_axis_spec.json"
             write(dp, dual_spec)
             chart_specs_written.append(safe_rel_path(dp, out_dir))
 
