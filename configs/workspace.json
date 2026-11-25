@@ -1,0 +1,169 @@
+{
+  "schema_version": "1.0.0",
+  "updated_date": "2026-11-24",
+  "paths": {
+    "default_report_root": "/data-cfs-extra/project_data/ps-2078-4397/reports",
+    "default_project_workspace_id": "ps-2078-4397",
+    "readonly_paths_blacklist": [
+      "/data-cfs-extra/project_data/用研市场调研助手"
+    ],
+    "require_explicit_out_dir_in_cli": true,
+    "forbid_writing_inside_skill_dir": true,
+    "report_subdir_layout": {
+      "research_dir": "research",
+      "run_state": "research/run_state.json",
+      "brief": "research/brief.md",
+      "raw_dir": "research/raw",
+      "data_dir": "research/data",
+      "charts_dir": "research/charts",
+      "media_dir": "research/media",
+      "screenshots_dir": "research/screenshots",
+      "template_html": "research/report.template.html",
+      "delivery_input": "research/delivery-input.json",
+      "delivery_meta": "research/delivery.json"
+    }
+  },
+  "runtime": {
+    "execution_topology": "single_model_with_isolated_remote_subagents",
+    "subagent_isolation": "remote",
+    "forbidden_subagent_isolations": [
+      "worktree"
+    ],
+    "mcp_preflight_required_on_new_session": true,
+    "mcp_preflight_probes": {
+      "st_readonly_tool_suffix": "sensortower-list-help-sections",
+      "metadata_readonly_tool_suffix": "data-yilan-mcp-get-current-time"
+    },
+    "knowledge_base_archive_root": "~",
+    "delete_upload_script_after_commit": true
+  },
+  "visual_review_policy": {
+    "store_screenshots_fetch_max": 5,
+    "mandatory_screenshots_for_tagging": {
+      "min": 2,
+      "max": 3
+    },
+    "extra_screenshots_and_ad_covers": "on_demand_when_style_or_gameplay_ambiguous",
+    "embed_in_standalone_html": "icons_and_svg_only",
+    "max_embedded_icon_px": 96,
+    "html_visual_qa_tool": "chromium-headless",
+    "require_explicit_degradation_notice_without_screenshots": true
+  },
+  "delivery_policy": {
+    "html_pair_naming": {
+      "external_suffix": ".html",
+      "standalone_suffix": ".base64.html",
+      "bundle_zip_suffix": "_bundle.zip"
+    },
+    "standalone_max_mb": 3.0,
+    "shortlink_delivery_notice": "知识库短链受门户鉴权限制，不作为在线静态网页托管；请下载 .base64.html 单文件版到本地，使用 Chrome/Edge 直接双击打开；完整源码与图片目录请解压 _bundle.zip 查看。",
+    "script_modes": {
+      "zero_js": {
+        "allow_script_tags": false,
+        "approved_inline_attr": null,
+        "approved_inline_value": null,
+        "max_inline_js_lines": 0,
+        "allow_external_scripts": false,
+        "noscript_readable_required": true,
+        "ui_mechanism": "sticky_nav_css_radio_tabs_details_and_target_anchors"
+      },
+      "whitelisted_inline_js": {
+        "allow_script_tags": true,
+        "approved_inline_attr": "data-approved-inline",
+        "approved_inline_value": "dashboard-ui",
+        "max_inline_js_lines": 150,
+        "allow_external_scripts": false,
+        "forbid_eval_and_network_apis": true,
+        "noscript_readable_required": true,
+        "allowed_features": [
+          "tag_pill_filter_highlight",
+          "table_column_sort",
+          "expand_collapse_all_details"
+        ]
+      }
+    }
+  },
+  "sanitization_policy": {
+    "raw_file_display_mode": "relative_to_report_dir",
+    "allowed_source_card_fields": [
+      "provider",
+      "params",
+      "observation_scope",
+      "url",
+      "retrieved_at",
+      "raw_file"
+    ],
+    "strip_source_card_fields": [
+      "tool",
+      "source_ref",
+      "mcp_trace_id",
+      "mcp_user_question",
+      "token_sign",
+      "_source"
+    ],
+    "strip_param_keys": [
+      "c",
+      "a",
+      "token_sign",
+      "_source",
+      "mcp_trace_id",
+      "mcp_user_question"
+    ],
+    "provider_display_map": {
+      "Sensor Tower": "Sensor Tower",
+      "yilan_store_metadata": "应用商店公开元数据",
+      "yilan_ad_creatives": "第三方投放监测素材",
+      "yilan_new_apps": "第三方新游监测索引",
+      "app_store_public": "应用商店公开页",
+      "web_film_plot": "公开维基与影评资料",
+      "web_public": "公开网页资料"
+    },
+    "forbidden_public_patterns": [
+      "/data-cfs-extra/",
+      "mcp__xiaoqi-",
+      "sensortower-yunying",
+      "yilan-web-mcp",
+      "zhiki-mcp",
+      "易览",
+      "艺览",
+      "运营月报",
+      "运营口径",
+      "按运营",
+      "运营分类",
+      "月报",
+      "gpt-6.2-sol"
+    ],
+    "strip_json_keys_prefixed_with": "_internal"
+  },
+  "film_reference_policy": {
+    "default_region_priority": [
+      "US",
+      "UK",
+      "EU"
+    ],
+    "asia_exception_rule": "仅当对应机会卡明确指向亚洲文化、日系治愈或东亚生活题材时，纳入高口碑日韩影视作品。",
+    "paragraphs_per_film": {
+      "min": 2,
+      "max": 3
+    },
+    "forbid_short_imdb_synopsis_only": true,
+    "preferred_plot_sources": [
+      "Wikipedia Plot",
+      "Fandom Wiki",
+      "长篇剧情影评与分集概述"
+    ],
+    "forbidden_film_fields": [
+      "cast",
+      "actors",
+      "release_date",
+      "release_year",
+      "target_audience",
+      "演员",
+      "主演",
+      "上映时间",
+      "上映年份",
+      "目标受众",
+      "受众人群"
+    ]
+  }
+}

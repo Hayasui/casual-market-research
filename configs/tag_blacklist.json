@@ -1,0 +1,324 @@
+{
+  "schema_version": "1.0.0",
+  "updated_date": "2026-11-24",
+  "primary_domains": [
+    {"id": "food_dining", "label_zh": "美食餐饮"},
+    {"id": "home_renovation", "label_zh": "居家改造"},
+    {"id": "hotel_business", "label_zh": "酒店商业"},
+    {"id": "farm_countryside", "label_zh": "农牧乡村"},
+    {"id": "fashion_styling", "label_zh": "时尚造型"},
+    {"id": "town_community", "label_zh": "城镇社区"},
+    {"id": "fantasy_realm", "label_zh": "奇幻异界", "full_only": true},
+    {"id": "craft_workshop", "label_zh": "器物工坊", "full_only": true},
+    {"id": "care_medical", "label_zh": "医养照护", "full_only": true}
+  ],
+  "tag_format": {
+    "tag_id_regex": "^[a-z][a-z0-9_]{1,39}$",
+    "label_zh_recommended_max_chars": 6,
+    "label_zh_hard_max_chars": 8,
+    "require_label_en": true,
+    "require_definition": true,
+    "require_include_and_exclude_examples": true
+  },
+  "slots": {
+    "pass1_free_tags_per_product": {
+      "min": 5,
+      "max": 8
+    },
+    "pass2_final_tags_per_product": {
+      "min": 2,
+      "max": 3
+    },
+    "axes": {
+      "theme_primary": {
+        "label_zh": "主题材",
+        "required": true,
+        "min": 1,
+        "max": 1,
+        "badge_color_role": "theme",
+        "guidance": "只记录玩家反复经营、修复或处理的对象，例如「烘焙店」「海滨餐厅」。一级取自 primary_domains，填写表中的 id。",
+        "allow_parent_domain": true,
+        "require_parent_domain": true
+      },
+      "presentation": {
+        "label_zh": "呈现形式",
+        "required": true,
+        "min": 1,
+        "max": 1,
+        "badge_color_role": "presentation",
+        "guidance": "只记录商店核心截图可指认的画风与渲染形态，例如治愈手绘、欧美Q版3D、写实厨房质感、极简立体几何。"
+      },
+      "fusion_secondary": {
+        "label_zh": "副题材或玩法融合",
+        "required": false,
+        "min": 0,
+        "max": 1,
+        "badge_color_role": "fusion",
+        "guidance": "副题材或融合玩法有独立操作或进度时才填写，例如家园装修、商业经营、角色换装。"
+      }
+    }
+  },
+  "narrative_motif": {
+    "label_zh": "叙事类型",
+    "required": false,
+    "min": 0,
+    "max": 1,
+    "controlled_enum_size": {
+      "min": 5,
+      "max": 8
+    },
+    "counts_toward_final_tags": false,
+    "controlled_enum": [
+      "家族八卦",
+      "豪门遗产",
+      "复仇翻身",
+      "失踪悬案",
+      "灾后求生"
+    ]
+  },
+  "axis_forbidden_terms": {
+    "presentation": [
+      "狗血",
+      "复仇",
+      "悬案",
+      "继承",
+      "分镜",
+      "切片"
+    ],
+    "theme_primary": [
+      "复仇",
+      "悬疑",
+      "狗血",
+      "八卦",
+      "秘闻"
+    ],
+    "fusion_secondary": [
+      "2D",
+      "3D",
+      "卡通",
+      "手绘",
+      "立绘"
+    ]
+  },
+  "evidence_rules": {
+    "valid_evidence_types": [
+      "store_desc",
+      "store_screenshot",
+      "st_review",
+      "web_wiki_review",
+      "ad_creative"
+    ],
+    "non_marketing_evidence_types": [
+      "store_desc",
+      "store_screenshot",
+      "st_review",
+      "web_wiki_review"
+    ],
+    "min_non_marketing_evidence_per_final_tag": 1,
+    "forbid_marketing_only_final_tag": true,
+    "presentation_slot_requires_visual_check": true,
+    "max_evidence_quote_words": 40,
+    "require_excluded_near_tags": true,
+    "valid_confidence_levels": [
+      "high",
+      "medium",
+      "low"
+    ],
+    "low_confidence_requires_human_adjudication": true
+  },
+  "banned_generic_terms": {
+    "matching_policy": {
+      "case_insensitive": true,
+      "strip_whitespace_and_punctuation": true,
+      "mode": "exact_match_on_label_zh_or_label_en_or_tag_id",
+      "comment": "对完整标签名做精确匹配（去空格与标点、不区分大小写），拦截空泛词与品类同义重复，同时避免误杀「餐厅经营」「美式狗血剧情」「欧美Q版3D」等具象复合词。"
+    },
+    "gameplay_and_subgenre_generics": {
+      "zh": [
+        "二合",
+        "三合",
+        "合成",
+        "合并",
+        "三消",
+        "消除",
+        "点消",
+        "线消",
+        "配对",
+        "混变",
+        "混变益智",
+        "混合休闲",
+        "混合变现",
+        "模拟经营",
+        "模拟",
+        "益智",
+        "解谜",
+        "休闲",
+        "超休闲",
+        "放置",
+        "卡牌",
+        "策略"
+      ],
+      "en": [
+        "merge",
+        "merge2",
+        "merge3",
+        "match3",
+        "matchswap",
+        "matchblast",
+        "matchpair",
+        "puzzle",
+        "casual",
+        "hybridcasual",
+        "hypercasual",
+        "simulation",
+        "sim",
+        "idle",
+        "idler",
+        "arcade",
+        "tycoon"
+      ]
+    },
+    "platform_and_monetization_generics": {
+      "zh": [
+        "手游",
+        "手机游戏",
+        "移动游戏",
+        "免费",
+        "免费游戏",
+        "内购",
+        "广告变现",
+        "单机",
+        "网游",
+        "出海",
+        "全球",
+        "爆款",
+        "头部",
+        "新品",
+        "老品"
+      ],
+      "en": [
+        "mobilegame",
+        "freetoplay",
+        "f2p",
+        "iap",
+        "iaa",
+        "global",
+        "hitgame",
+        "topgrossing"
+      ]
+    },
+    "empty_evaluative_adjectives": {
+      "zh": [
+        "有趣",
+        "好玩",
+        "上头",
+        "解压",
+        "魔性",
+        "爽感",
+        "精美",
+        "好看",
+        "精致",
+        "高质量",
+        "高品质",
+        "热门",
+        "经典",
+        "常规",
+        "综合",
+        "多元",
+        "混合",
+        "其他",
+        "通用",
+        "创新"
+      ],
+      "en": [
+        "fun",
+        "addictive",
+        "relaxing",
+        "satisfying",
+        "beautiful",
+        "nice",
+        "highquality",
+        "classic",
+        "popular",
+        "general",
+        "other",
+        "misc",
+        "innovative"
+      ]
+    },
+    "overly_broad_buckets": {
+      "zh": [
+        "现代题材",
+        "生活题材",
+        "剧情向",
+        "叙事向",
+        "美术向",
+        "风格化",
+        "卡通画风",
+        "欧美画风",
+        "写实画风",
+        "2D",
+        "3D"
+      ],
+      "en": [
+        "modern",
+        "lifestyle",
+        "story",
+        "narrative",
+        "stylized",
+        "cartoon",
+        "realistic",
+        "2d",
+        "3d"
+      ]
+    }
+  },
+  "vocab_capacity": {
+    "catalog_max": null,
+    "active_vocab_note": "激活词表沿用 mode_thresholds 的 pilot 12 到 20、full 25 到 40；全库候选目录不设硬顶"
+  },
+  "mode_thresholds": {
+    "pilot": {
+      "vocab_min": 12,
+      "vocab_max": 20,
+      "blind_sample_size": 5,
+      "blind_sample_stratification": "1头部强剧情 + 2题材易混/脏标签样本 + 2近12月首发新品或低置信样本",
+      "theme_primary_agreement_min": 0.80,
+      "tag_set_overlap_min": 0.75,
+      "overlap_formula": "|A ∩ B| / min(|A|, |B|)",
+      "max_unresolved_low_confidence": 0,
+      "emerging_singleton_allowed_for_new_releases": true,
+      "signoff_method": "dialogue_table_approval",
+      "signoff_artifact": "research/data/tag_vocab_draft.md"
+    },
+    "full": {
+      "vocab_min": 25,
+      "vocab_max": 40,
+      "blind_sample_size": 15,
+      "blind_sample_per_subgenre": 3,
+      "blind_sample_stratification": "每品类 3 款：1 头部老品 + 1 跨题材易混品 + 1 新品或低置信样本",
+      "theme_primary_agreement_min": 0.80,
+      "tag_set_overlap_min": 0.75,
+      "overlap_formula": "|A ∩ B| / min(|A|, |B|)",
+      "max_unresolved_low_confidence": 0,
+      "emerging_singleton_allowed_for_new_releases": true,
+      "freeze_existing_pilot_tag_ids_on_expand": true,
+      "signoff_method": "dialogue_table_approval",
+      "signoff_artifact": "research/data/tag_vocab_draft.md"
+    }
+  },
+  "blind_retest_protocol": {
+    "disclosure_label": "同模型独立上下文重测（度量词表歧义与输出稳定性，不等于跨模型交叉验证）",
+    "subagent_isolation": "remote",
+    "strip_input_fields": [
+      "pass1_free_tags",
+      "pass2_final_tags",
+      "pass2_rationale",
+      "st_game_iq_theme",
+      "st_game_iq_art_style",
+      "st_game_iq_tags"
+    ],
+    "require_falsification_first_prompt": true,
+    "falsification_instruction": "对每款抽检产品，先找出 2 个最易混淆、必须排除的近义受控词并给出原文或截图反证，再锁定剩余的 2–3 个受控 Tag。"
+  }
+}
