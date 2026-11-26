@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "updated_date": "2026-11-24",
+  "updated_date": "2026-11-26",
   "paths": {
     "default_report_root": "/data-cfs-extra/project_data/ps-2078-4397/reports",
     "default_project_workspace_id": "ps-2078-4397",
@@ -20,12 +20,17 @@
       "screenshots_dir": "research/screenshots",
       "template_html": "research/report.template.html",
       "delivery_input": "research/delivery-input.json",
-      "delivery_meta": "research/delivery.json"
+      "delivery_meta": "research/delivery.json",
+      "packet_manifest": "research/data/packet_manifest.json",
+      "handoff_questions": "research/data/handoff_questions.md"
     }
   },
   "runtime": {
     "execution_topology": "single_model_with_isolated_remote_subagents",
     "subagent_isolation": "remote",
+    "subagent_model_inheritance": "inherit_main",
+    "forbid_subagent_model_override": true,
+    "model_inheritance_basis": "2026-11-26 当前云端宿主实测确认：母子代理运行同一模型，指定非自身模型参数既不改变执行模型也留不下可核记录；宿主换版本须重新实测。",
     "forbidden_subagent_isolations": [
       "worktree"
     ],
@@ -35,13 +40,23 @@
       "metadata_readonly_tool_suffix": "data-yilan-mcp-get-current-time"
     },
     "knowledge_base_archive_root": "~",
-    "delete_upload_script_after_commit": true
+    "delete_upload_script_after_commit": true,
+    "human_stop_policy": {
+      "only_mandatory_stop": "stage2_vocab_signoff",
+      "stop_delivery_mode": "plain_text_and_file",
+      "forbid_option_cards": true,
+      "forbid_choice_prompt_tools": ["ask_user_question", "choice_card", "option_card"],
+      "questions_file": "research/data/handoff_questions.md",
+      "questions_section": "## 待人工拍板事项"
+    }
   },
   "visual_review_policy": {
     "store_screenshots_fetch_max": 5,
+    "scan_all_available_screenshots_for_unit": true,
     "mandatory_screenshots_for_tagging": {
       "min": 2,
-      "max": 3
+      "max": 3,
+      "protocol": "scan_all_available_screenshots_1_to_5_and_lock_visual_unit"
     },
     "extra_screenshots_and_ad_covers": "on_demand_when_style_or_gameplay_ambiguous",
     "embed_in_standalone_html": "icons_and_svg_only",

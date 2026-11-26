@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0.0",
-  "updated_date": "2026-11-24",
+  "updated_date": "2026-11-26",
   "primary_domains": [
     {"id": "food_dining", "label_zh": "美食餐饮"},
     {"id": "home_renovation", "label_zh": "居家改造"},
@@ -46,7 +46,7 @@
         "min": 1,
         "max": 1,
         "badge_color_role": "presentation",
-        "guidance": "只记录商店实机棋盘与主场景截图可指认的呈现风格，按「人物与物体比例、渲染质感与光影、色彩饱和度、空间立体度」四特征锚定，例如欧美3D预渲染、欧美卡通手绘、欧美半写实插画、写实食物质感、治愈厚涂手绘、极简立体几何。"
+        "guidance": "只记录商店实机棋盘与主场景可指认的呈现风格，按「人物与物体比例、渲染质感与笔触光影、色彩饱和度、空间立体度」四项可见特征锚定。绘制型分平涂图标、欧美绘本卡通、东方勾线彩绘；立体型分圆润亮彩立体、细材质立体。不反推渲染技术；未经实证不得在 tag_id 或 label_zh 中使用 2D/3D。"
       },
       "fusion_secondary": {
         "label_zh": "副题材或玩法融合",
@@ -114,7 +114,18 @@
       "悬案",
       "继承",
       "分镜",
-      "切片"
+      "切片",
+      "茶馆",
+      "茶楼",
+      "餐厅",
+      "餐馆",
+      "烘焙坊",
+      "农场",
+      "酒店",
+      "旅馆",
+      "小镇",
+      "庄园",
+      "房间"
     ],
     "theme_primary": [
       "复仇",
@@ -144,6 +155,32 @@
       "drama"
     ]
   },
+  "presentation_policy": {
+    "forbid_dimension_tokens_in_label_or_id": ["2d", "3d"],
+    "require_render_tech_verification_for_dimension_tokens": true,
+    "max_share_warning": 0.4,
+    "max_share_hard_block_without_waiver": 0.6,
+    "require_irreducibility_note_above_warning": true,
+    "forbid_theme_terms_in_definition": true
+  },
+  "emerging_policy": {
+    "allowed_only_for_verified_new_releases": true,
+    "pilot_scope_meaning": "仅表示由近 12 个月已核验新品引入的试点单例，不代表休闲全盘新题材",
+    "revert_to_false_on_full_hits_min": 2
+  },
+  "visual_unit_policy": {
+    "controlled_enum": ["board_and_scene_pair", "gameplay_board", "main_scene", "promo_or_portrait_only"],
+    "forbidden_high_conf_units": ["promo_or_portrait_only"],
+    "preferred_unit_by_subgenre": {
+      "merge": "board_and_scene_pair",
+      "match_3": "board_and_scene_pair",
+      "hybrid_puzzle": "gameplay_board",
+      "simulation": "main_scene"
+    },
+    "require_full_scan_before_fallback": true,
+    "require_fallback_reason_when_not_preferred": true,
+    "required_presentation_evidence_fields": ["screenshot_index", "visual_unit", "primary_visual_region"]
+  },
   "evidence_rules": {
     "valid_evidence_types": [
       "store_desc",
@@ -168,7 +205,8 @@
       "medium",
       "low"
     ],
-    "low_confidence_requires_human_adjudication": true
+    "allowed_adjudication_owners": ["main_session", "human"],
+    "low_confidence_fallback_policy": "缺少一级非买量叙事原证时降级为无剧情并置 narrative_motif 为 null"
   },
   "banned_generic_terms": {
     "matching_policy": {
@@ -332,6 +370,7 @@
       "tag_set_overlap_min": 0.75,
       "overlap_formula": "|A ∩ B| / |A ∪ B|",
       "max_unresolved_low_confidence": 0,
+      "adjudication_owner": "main_session",
       "emerging_singleton_allowed_for_new_releases": true,
       "signoff_method": "dialogue_table_approval",
       "signoff_artifact": "research/data/tag_vocab_draft.md"
@@ -347,6 +386,7 @@
       "tag_set_overlap_min": 0.75,
       "overlap_formula": "|A ∩ B| / |A ∪ B|",
       "max_unresolved_low_confidence": 0,
+      "adjudication_owner": "main_session",
       "emerging_singleton_allowed_for_new_releases": true,
       "freeze_existing_pilot_tag_ids_on_expand": true,
       "signoff_method": "dialogue_table_approval",
@@ -356,6 +396,16 @@
   "blind_retest_protocol": {
     "disclosure_label": "同模型独立上下文重测（度量词表歧义与输出稳定性，不等于跨模型交叉验证）",
     "subagent_isolation": "remote",
+    "subagent_model": "inherit_main",
+    "forbid_model_override": true,
+    "forbid_unverified_model_names_in_disclosure": true,
+    "allowed_disclosures": [
+      "同模型独立上下文重测",
+      "同模型独立上下文重测（度量词表歧义与输出稳定性，不等于跨模型交叉验证）",
+      "文本与视觉分通道独立上下文重测"
+    ],
+    "unverified_model_name_patterns": ["sonnet", "opus", "haiku", "claude", "gpt-", "gemini", "deepseek", "qwen"],
+    "model_inheritance_basis": "2026-11-26 当前云端宿主实测确认：母子代理运行同一模型，指定非自身模型参数既不改变执行模型也留不下可核记录；宿主换版本须重新实测。",
     "strip_input_fields": [
       "pass1_free_tags",
       "pass2_final_tags",

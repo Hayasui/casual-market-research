@@ -5,7 +5,7 @@ Pure Python standard library. Reads rules exclusively from configs/tag_blacklist
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict
+from collections import Counter, defaultdict
 from copy import deepcopy
 from datetime import datetime, timezone
 import json
@@ -26,6 +26,12 @@ NARRATIVE_AXIS = "narrative_motif"
 INTENSITY_AXIS = "narrative_intensity"
 OFFICIAL_MORPHEMES = ("复建", "复耕", "选装", "物业", "镇区", "影都", "复苏", "矩阵", "体系")
 COMPOUND_LABEL_RE = re.compile(r"[/／、()（）\[\]［］【】或]")
+NEXT_ACTIONS = {
+    "validate-vocab": "按 errors 修改 --vocab 中的词条、说明或豁免，若指向草稿则修改 --draft-md。改完重新运行本次 tag_qc.py validate-vocab 命令。",
+    "validate-tags": "按 errors 核对标签、证据和呈现判定单元，补齐所需字段后重新运行 tag_qc.py validate-tags。",
+    "evaluate": "按 errors 核对 --blind 的协议披露、模型记录与样本，或按报告阈值复核 --tags 与 --blind。改完重新运行本次 tag_qc.py evaluate 命令。",
+    "finalize": "按 errors 补齐 --adjudications 的正式裁决与叙事证据，若盲测未通过或披露有误则先用 evaluate 重出 --qc。改完重新运行本次 tag_qc.py finalize 命令。",
+}
 
 
 def _main_tags(product):
@@ -144,6 +150,81 @@ def _extract_product_list(obj) -> list[dict]:
     raise ValueError("JSON must be a list or contain a 'products' array")
 
 
+def _nonempty(value):
+    return bool(value.strip()) if isinstance(value, str) else bool(value)
+
+
+def _presentation_vocab_errors(item, forbidden_terms, dimension_tokens, dimension_re):
+    tid = str(item.get("tag_id") or "")
+    errors = []
+    for field in ("definition", "include_examples"):
+        value = item.get(field)
+        texts = value if isinstance(value, list) else [value]
+        normalized = [normalize_term(text) for text in texts]
+        for term, original in forbidden_terms.items():
+            if any(term in text for text in normalized):
+                errors.append(f"{tid}: cross-axis term '{original}' in presentation {field}")
+
+    if item.get("render_tech_verified") is True and _nonempty(item.get("render_tech_evidence")):
+        return errors
+    fields = []
+    if dimension_tokens.intersection(tid.casefold().split("_")):
+        fields.append("tag_id")
+    fields.extend(
+        field for field in ("label_zh", "label_en")
+        if dimension_re and dimension_re.search(str(item.get(field) or ""))
+    )
+    if fields:
+        errors.append(
+            f"{tid}: presentation dimension token in {', '.join(fields)} requires "
+            "render_tech_verified=true and nonempty render_tech_evidence"
+        )
+    return errors
+
+
+def _draft_vocab_errors(draft, warning_keys):
+    errors = []
+    markers = ("（待复核）", "（待补证）", "(待复核)", "(待补证)")
+    for marker in markers:
+        if marker in draft:
+            errors.append(f"draft Markdown contains illegal enum annotation {marker!r}")
+    lines = draft.casefold().splitlines()
+    for tid, warning_type in warning_keys:
+        id_re = re.compile(rf"(?<![a-z0-9_]){re.escape(tid.casefold())}(?![a-z0-9_])")
+        if not any(id_re.search(line) and warning_type.casefold() in line for line in lines):
+            errors.append(f"draft Markdown missing warning for {tid}: {warning_type}")
+    if "passed_no_waiver" in draft and not re.search(r"irreducibility_note|不可(?:再|细)?分|无法再分", draft):
+        errors.append("draft Markdown uses passed_no_waiver without an irreducibility note (不可再分说明)")
+    return errors
+
+
+def _valid_screenshot_index(value):
+    indices = value if isinstance(value, list) else [value]
+    return bool(indices) and all(type(index) is int and index > 0 for index in indices)
+
+
+def _visual_confidence_error(tag, uid, confidence, cfg):
+    unit = tag.get("visual_unit")
+    if unit in cfg["visual_unit_policy"]["forbidden_high_conf_units"] and confidence != "low":
+        return f"{uid}: presentation visual_unit {unit} requires confidence=low"
+    return None
+
+
+def _protocol_disclosure_error(disclosure, record, protocol):
+    if not isinstance(disclosure, str) or not disclosure.strip():
+        return "protocol_disclosure must be nonempty text"
+    if isinstance(record, dict) and record:
+        return None
+    allowed_disclosures = protocol.get("allowed_disclosures", [protocol["disclosure_label"]])
+    if disclosure.strip() in allowed_disclosures:
+        return None
+    markers = [*protocol["unverified_model_name_patterns"], "未核实与主会话同模型", "跨模型"]
+    hits = [marker for marker in markers if marker.casefold() in disclosure.casefold()]
+    if hits:
+        return f"protocol_disclosure contains unverified model or cross-model claims {hits!r}; requires nonempty harness_model_record"
+    return None
+
+
 def cmd_validate_vocab(args) -> int:
     cfg = load_blacklist_cfg()
     mode_cfg = cfg["mode_thresholds"][args.preset]
@@ -160,7 +241,22 @@ def cmd_validate_vocab(args) -> int:
 
     vocab_raw = read(Path(args.vocab).resolve())
     entries = _extract_vocab_entries(vocab_raw)
+    metadata = vocab_raw if isinstance(vocab_raw, dict) else {}
     errors, warnings = [], []
+    warning_keys = []
+
+    def warn(tid, warning_type, message=None):
+        warnings.append(f"{tid}: {message or warning_type}")
+        warning_keys.append((tid, warning_type))
+
+    policy = cfg["presentation_policy"]
+    dimension_tokens = {token.casefold() for token in policy["forbid_dimension_tokens_in_label_or_id"]}
+    dimension_pattern = "|".join(re.escape(token) for token in sorted(dimension_tokens))
+    # ASCII word boundaries let Chinese text directly precede a dimension token.
+    dimension_re = re.compile(rf"\b(?:{dimension_pattern})\b", re.IGNORECASE | re.ASCII) if dimension_pattern else None
+    cross_axis_terms = list(axis_forbidden.get("presentation", []))
+    cross_axis_terms.extend(item.get("label_zh") for item in entries if item.get("axis") == "theme_primary")
+    forbidden_terms = {normalize_term(term): term for term in cross_axis_terms if normalize_term(term)}
 
     main_count = sum(item.get("axis") in axes for item in entries)
     if not (mode_cfg["vocab_min"] <= main_count <= mode_cfg["vocab_max"]):
@@ -190,7 +286,7 @@ def cmd_validate_vocab(args) -> int:
             if len(zh) > int(fmt["label_zh_hard_max_chars"]):
                 errors.append(f"{tid}: label_zh '{zh}' exceeds hard max {fmt['label_zh_hard_max_chars']} chars")
             elif len(zh) > int(fmt["label_zh_recommended_max_chars"]):
-                warnings.append(f"{tid}: label_zh '{zh}' exceeds recommended {fmt['label_zh_recommended_max_chars']} chars")
+                warn(tid, "exceeds recommended", f"label_zh '{zh}' exceeds recommended {fmt['label_zh_recommended_max_chars']} chars")
             zh_norm = normalize_term(zh)
             if zh_norm in seen_zh:
                 errors.append(f"{tid}: duplicate normalized label_zh '{zh}'")
@@ -223,7 +319,7 @@ def cmd_validate_vocab(args) -> int:
             if axis in axes and not hits:
                 errors.append(f"{tid}: hit_app_ids must contain at least one app ID")
             if len(hits) == 1 and item.get("emerging") is not True:
-                warnings.append(f"{tid}: one hit without emerging=true")
+                warn(tid, "one hit without emerging=true")
         if fmt.get("require_definition", True) and not str(item.get("definition") or "").strip():
             errors.append(f"{tid}: missing definition")
         if fmt.get("require_include_and_exclude_examples", True):
@@ -243,16 +339,52 @@ def cmd_validate_vocab(args) -> int:
             for term in axis_forbidden.get(axis, []):
                 if normalize_term(term) in normalized:
                     errors.append(f"{tid}: axis_forbidden_terms hit '{term}' in {field_name}='{val}'")
+        if axis == "presentation":
+            errors.extend(_presentation_vocab_errors(item, forbidden_terms, dimension_tokens, dimension_re))
         matched = [term for term in morphemes if normalize_term(term) in normalize_term(zh)]
         if matched:
-            warnings.append(f"{tid}: official morphemes in label_zh: {'、'.join(matched)}")
+            warn(tid, "official morphemes in label_zh", f"official morphemes in label_zh: {'、'.join(matched)}")
 
+    presentation_max_share = 0.0
+    concentration_gate_status = "passed"
+    concentration_statuses = (
+        "passed", "passed_with_irreducibility_note", "passed_with_concentration_waiver",
+        "warning_missing_irreducibility_note", "failed_missing_concentration_waiver",
+    )
     for tid, item in entry_map.items():
         axis = item.get("axis")
         hits = len(hits_by_id.get(tid, set()))
         axis_total = len(hits_by_axis[axis])
-        if axis in axes and axis_total and hits * 5 > axis_total * 2:
-            warnings.append(f"{tid}: {axis} hit share {hits}/{axis_total} ({hits / axis_total:.1%}) exceeds 40%")
+        share = hits / axis_total if axis_total else 0.0
+        warning_threshold = policy["max_share_warning"] if axis == "presentation" else 0.40
+        if axis in axes and share > warning_threshold:
+            warning_type = f"{axis} hit share"
+            warn(tid, warning_type, f"{warning_type} {hits}/{axis_total} ({share:.1%}) exceeds {warning_threshold:.0%}")
+        if axis != "presentation":
+            continue
+        presentation_max_share = max(presentation_max_share, share)
+        if share > policy["max_share_hard_block_without_waiver"]:
+            if any(_nonempty(record.get("concentration_waiver")) for record in (item, metadata)):
+                gate_status = "passed_with_concentration_waiver"
+            else:
+                errors.append(f"{tid}: presentation hit share {hits}/{axis_total} ({share:.1%}) requires concentration_waiver")
+                gate_status = "failed_missing_concentration_waiver"
+        elif share > warning_threshold:
+            if any(_nonempty(record.get(key)) for record in (item, metadata) for key in ("irreducibility_note", "signoff_note")):
+                gate_status = "passed_with_irreducibility_note"
+            else:
+                warn(tid, "warning_missing_irreducibility_note", "warning_missing_irreducibility_note (add irreducibility_note or signoff_note)")
+                gate_status = "warning_missing_irreducibility_note"
+        else:
+            gate_status = "passed"
+        concentration_gate_status = max(concentration_gate_status, gate_status, key=concentration_statuses.index)
+
+    fusion_count = sum(item.get("axis") == "fusion_secondary" for item in entries)
+    fusion_audit = metadata.get("fusion_zero_audit")
+    if not fusion_count and not (
+        (isinstance(fusion_audit, (list, dict)) and fusion_audit) or _nonempty(metadata.get("fusion_disposition"))
+    ):
+        errors.append("zero fusion_secondary tags require nonempty fusion_zero_audit or fusion_disposition")
 
     # Freeze existing pilot tag_ids when expanding to full
     if args.prior_vocab and mode_cfg.get("freeze_existing_pilot_tag_ids_on_expand", False):
@@ -264,14 +396,23 @@ def cmd_validate_vocab(args) -> int:
             elif entry_map[ptid].get("axis") != pitem.get("axis"):
                 errors.append(f"frozen prior tag_id axis changed: {ptid}")
 
+    if args.draft_md:
+        draft = Path(args.draft_md).read_text(encoding="utf-8-sig")
+        errors.extend(_draft_vocab_errors(draft, warning_keys))
+
     result = {
         "status": "passed" if not errors else "failed",
         "preset": args.preset,
         "vocab_count": main_count,
+        "presentation_max_share": presentation_max_share,
+        "concentration_gate_status": concentration_gate_status,
+        "fusion_candidates_retained": fusion_count,
         "hit_counts": {tid: len(hits) for tid, hits in hits_by_id.items()},
         "errors": errors,
         "warnings": warnings,
     }
+    if errors:
+        result["next_action"] = NEXT_ACTIONS[args.command]
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if not errors else 2
 
@@ -280,6 +421,7 @@ def cmd_validate_tags(args) -> int:
     cfg = load_blacklist_cfg()
     slots_cfg = cfg["slots"]
     ev_cfg = cfg["evidence_rules"]
+    visual_policy = cfg["visual_unit_policy"]
     banned = build_banned_set(cfg)
 
     vocab_entries = _extract_vocab_entries(read(Path(args.vocab).resolve()))
@@ -294,6 +436,7 @@ def cmd_validate_tags(args) -> int:
 
     errors, warnings, low_conf_ids = [], [], []
     tagged_uids = set()
+    visual_units = Counter()
     non_mkt_types = set(ev_cfg["non_marketing_evidence_types"])
     valid_ev_types = set(ev_cfg["valid_evidence_types"])
     valid_conf = set(ev_cfg["valid_confidence_levels"])
@@ -329,7 +472,10 @@ def cmd_validate_tags(args) -> int:
         if not isinstance(shots_rev, list):
             errors.append(f"{pname}: screenshots_reviewed must be an array")
             shots_rev = []
-        available_shots = (roster_map.get(uid) or {}).get("screenshot_files") or []
+        roster_prod = roster_map.get(uid, {})
+        available_shots = roster_prod.get("screenshot_files") or []
+        subgenre = roster_prod.get("primary_subgenre") or prod.get("subgenre_id")
+        preferred_unit = visual_policy["preferred_unit_by_subgenre"].get(subgenre)
         for shot in shots_rev:
             if not isinstance(shot, str) or shot not in available_shots:
                 errors.append(f"{pname}: reviewed screenshot {shot!r} not in roster screenshot_files")
@@ -338,6 +484,27 @@ def cmd_validate_tags(args) -> int:
 
         for tag in raw_tags:
             tid = tag.get("tag_id") or tag.get("slot") or ""
+            if tag.get("slot") == "presentation":
+                unit = tag.get("visual_unit")
+                if unit not in visual_policy["controlled_enum"]:
+                    errors.append(f"{pname}/{tid}: invalid visual_unit {unit!r}")
+                else:
+                    visual_units[unit] += 1
+                    if preferred_unit is not None and unit != preferred_unit:
+                        if any(shot not in shots_rev for shot in available_shots):
+                            errors.append(f"{pname}/{tid}: fallback visual_unit requires screenshots_reviewed to cover all screenshot_files")
+                        fallback_reason = tag.get("visual_unit_fallback_reason")
+                        if not isinstance(fallback_reason, str) or not fallback_reason.strip():
+                            errors.append(f"{pname}/{tid}: missing visual_unit_fallback_reason")
+                if not _valid_screenshot_index(tag.get("screenshot_index")):
+                    errors.append(f"{pname}/{tid}: screenshot_index must be a positive integer or an array of positive integers")
+                visual_region = tag.get("primary_visual_region")
+                if not isinstance(visual_region, str) or not visual_region.strip():
+                    errors.append(f"{pname}/{tid}: missing primary_visual_region")
+                visual_error = _visual_confidence_error(tag, uid, prod.get("confidence"), cfg)
+                if visual_error:
+                    errors.append(visual_error)
+
             ev_src = str(tag.get("evidence_source_id") or "").strip()
             if not ev_src:
                 errors.append(f"{pname}/{tid}: missing evidence_source_id")
@@ -372,7 +539,6 @@ def cmd_validate_tags(args) -> int:
                 errors.append(f"{pname}: tag '{tid}' slot '{slot}' mismatches vocab axis '{vocab_map[tid].get('axis')}'")
             if normalize_term(tid) in banned or normalize_term(zh) in banned:
                 errors.append(f"{pname}: banned generic term in tag '{tid}'/'{zh}'")
-
             ev_type = str(t.get("evidence_type") or "")
             mkt_only = bool(t.get("marketing_only", False))
             ev_quote = str(t.get("evidence_quote") or "").strip()
@@ -412,9 +578,12 @@ def cmd_validate_tags(args) -> int:
         "roster_count": len(roster_map),
         "tagged_count": len(tagged_uids),
         "low_confidence_ids": low_conf_ids,
+        "visual_unit_distribution": dict(visual_units),
         "errors": errors,
         "warnings": warnings,
     }
+    if errors:
+        result["next_action"] = NEXT_ACTIONS[args.command]
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if not errors else 2
 
@@ -522,11 +691,18 @@ def cmd_evaluate(args) -> int:
     proto = cfg["blind_retest_protocol"]
 
     tags_list = _extract_product_list(read(Path(args.tags).resolve()))
-    blind_list = _extract_product_list(read(Path(args.blind).resolve()))
+    blind_raw = read(Path(args.blind).resolve())
+    blind_list = _extract_product_list(blind_raw)
+    blind_metadata = blind_raw if isinstance(blind_raw, dict) else {}
+    disclosure = blind_metadata.get("protocol_disclosure", proto["disclosure_label"])
+    model_record = blind_metadata.get("harness_model_record")
     primary_map = {str(p["unified_app_id"]): p for p in tags_list}
 
     required_n = int(mode_cfg["blind_sample_size"])
     errors = []
+    disclosure_error = _protocol_disclosure_error(disclosure, model_record, proto)
+    if disclosure_error:
+        errors.append(disclosure_error)
     if len(blind_list) < required_n:
         errors.append(f"blind sample count {len(blind_list)} < required {required_n} for preset '{args.preset}'")
 
@@ -537,6 +713,9 @@ def cmd_evaluate(args) -> int:
     overlaps = []
     colliding_pairs = {axis: defaultdict(int) for axis in match_counts}
     allowed_narratives = cfg[NARRATIVE_AXIS]["controlled_enum"]
+    controlled_enum = cfg["visual_unit_policy"]["controlled_enum"]
+    visual_units = {"primary": Counter(), "blind": Counter()}
+    visual_matches = 0
 
     for bprod in blind_list:
         uid = str(bprod.get("unified_app_id") or "")
@@ -551,6 +730,23 @@ def cmd_evaluate(args) -> int:
         pprod = primary_map[uid]
         p_tags = [t for t in _main_tags(pprod) if t.get("slot") in axes and t.get("tag_id")]
         b_tags = [t for t in _main_tags(bprod) if t.get("slot") in axes and t.get("tag_id")]
+        p_visual = next((tag for tag in p_tags if tag["slot"] == "presentation"), {})
+        b_visual = next((tag for tag in b_tags if tag["slot"] == "presentation"), {})
+        p_unit = p_visual.get("visual_unit")
+        b_unit = b_visual.get("visual_unit")
+        visual_match = p_unit == b_unit and p_unit in controlled_enum
+        visual_matches += visual_match
+        for side, prod, visual in (("primary", pprod, p_visual), ("blind", bprod, b_visual)):
+            unit = visual.get("visual_unit")
+            if isinstance(unit, str) and unit:
+                visual_units[side][unit] += 1
+            if unit not in controlled_enum:
+                errors.append(f"{side}: {uid}: invalid visual_unit {unit!r}")
+            if not _valid_screenshot_index(visual.get("screenshot_index")):
+                errors.append(f"{side}: {uid}: screenshot_index must be a positive integer or an array of positive integers")
+            visual_error = _visual_confidence_error(visual, uid, prod.get("confidence"), cfg)
+            if visual_error:
+                errors.append(f"{side}: {visual_error}")
         p_slots = {t["slot"]: t["tag_id"] for t in p_tags}
         b_slots = {t["slot"]: t["tag_id"] for t in b_tags}
         p_set = {t["tag_id"] for t in p_tags}
@@ -583,6 +779,11 @@ def cmd_evaluate(args) -> int:
             "primary_presentation": p_slots.get("presentation"),
             "blind_presentation": b_slots.get("presentation"),
             "presentation_match": axis_matches["presentation"],
+            "primary_visual_unit": p_unit,
+            "blind_visual_unit": b_unit,
+            "visual_unit_match": visual_match,
+            "primary_screenshot_index": p_visual.get("screenshot_index"),
+            "blind_screenshot_index": b_visual.get("screenshot_index"),
             "primary_fusion": p_slots.get("fusion_secondary"),
             "blind_fusion": b_slots.get("fusion_secondary"),
             "fusion_match": axis_matches["fusion_secondary"],
@@ -597,7 +798,7 @@ def cmd_evaluate(args) -> int:
             "set_overlap": round(overlap, 4),
         }
         comparisons.append(comp)
-        if not all(axis_matches.values()) or overlap < 1.0:
+        if not visual_match or not all(axis_matches.values()) or overlap < 1.0:
             disagreements.append(comp)
 
     n_eval = len(comparisons)
@@ -620,11 +821,13 @@ def cmd_evaluate(args) -> int:
     report = {
         "schema_version": "1.0.0",
         "preset": args.preset,
-        "protocol_disclosure": proto["disclosure_label"],
+        "protocol_disclosure": disclosure,
         "sample_evaluated": n_eval,
         "sample_required": required_n,
         "theme_primary_agreement": round(theme_rate, 4),
         "presentation_agreement": round(agreement["presentation"], 4),
+        "visual_unit_agreement": round(visual_matches / n_eval, 4) if n_eval else 0.0,
+        "visual_unit_distribution": {side: dict(counts) for side, counts in visual_units.items()},
         "fusion_agreement": round(agreement["fusion_secondary"], 4),
         "narrative_intensity_agreement": round(agreement[INTENSITY_AXIS], 4),
         "narrative_motif_agreement": round(agreement[NARRATIVE_AXIS], 4),
@@ -642,13 +845,19 @@ def cmd_evaluate(args) -> int:
         "low_confidence_products": low_conf,
         "comparisons": comparisons,
     }
+    if isinstance(model_record, dict) and model_record:
+        report["harness_model_record"] = model_record
+    if not passed_thresholds:
+        report["next_action"] = NEXT_ACTIONS[args.command]
     out_path = Path(args.output).resolve()
     write(out_path, report)
-    print(json.dumps({
+    result = {
         "status": "passed" if passed_thresholds else "failed",
         "output": str(out_path),
         "theme_primary_agreement": report["theme_primary_agreement"],
         "presentation_agreement": report["presentation_agreement"],
+        "visual_unit_agreement": report["visual_unit_agreement"],
+        "visual_unit_distribution": report["visual_unit_distribution"],
         "fusion_agreement": report["fusion_agreement"],
         "narrative_intensity_agreement": report["narrative_intensity_agreement"],
         "narrative_motif_agreement": report["narrative_motif_agreement"],
@@ -658,8 +867,57 @@ def cmd_evaluate(args) -> int:
         "disagreement_count": len(disagreements),
         "low_confidence_count": len(low_conf),
         "errors": errors,
-    }, ensure_ascii=False, indent=2))
+    }
+    if not passed_thresholds:
+        result["next_action"] = report["next_action"]
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if passed_thresholds else 2
+
+
+def _apply_narrative_adjudication(prod, decision, cfg):
+    explicit_fields = set()
+    for field in (INTENSITY_AXIS, NARRATIVE_AXIS, "narrative_evidence"):
+        key = next((key for key in (field, f"final_{field}") if key in decision), None)
+        if key is not None:
+            prod[field] = decision[key]
+            explicit_fields.add(field)
+            if field == NARRATIVE_AXIS:
+                prod["tags"] = _main_tags(prod)
+    check_intensity = INTENSITY_AXIS not in explicit_fields
+    check_motif = NARRATIVE_AXIS not in explicit_fields
+    if not (check_intensity or check_motif):
+        return
+
+    uid = prod["unified_app_id"]
+    allowed_motifs = cfg[NARRATIVE_AXIS]["controlled_enum"]
+    current_motif = _checked_narrative(prod, allowed_motifs) if check_motif else None
+    intensity_values = "|".join(re.escape(value) for value in cfg[INTENSITY_AXIS]["controlled_enum"])
+    motif_values = "|".join(re.escape(value) for value in sorted(allowed_motifs, key=len, reverse=True))
+    change_intensity = re.compile(
+        r"(?<!不)(?<!未)(?<!无需)(?<!不足以)(?:改|调整|[降升][级格]|[降升]为|定为)"
+        rf"[为成至到]?[\s：:「『“]*({intensity_values})"
+    )
+    change_motif = re.compile(r"母题\s*(?:(?:从|由)[^，。；\n]*?)?(?:改|调整)[为成至到]?|母题\s*清空")
+    for field in ("note", "decision"):
+        text = str(decision.get(field) or "").strip()
+        if check_intensity:
+            new_intensities = change_intensity.findall(text)
+            if re.fullmatch(intensity_values, text):
+                new_intensities.append(text)
+            if any(value != prod.get(INTENSITY_AXIS) for value in new_intensities):
+                raise ValueError(f"{uid}: {field} changes narrative_intensity without an explicit narrative_intensity field")
+        if not check_motif:
+            continue
+        for change in change_motif.finditer(text):
+            target = re.match(rf"[\s：:「『“]*({motif_values}|清空|留空|空|null|None)", text[change.end():])
+            if change.group().endswith("清空"):
+                new_motif = None
+            elif target is None:
+                raise ValueError(f"{uid}: {field} changes narrative_motif without an explicit narrative_motif field")
+            else:
+                new_motif = target[1] if target[1] in allowed_motifs else None
+            if new_motif != current_motif:
+                raise ValueError(f"{uid}: {field} changes narrative_motif without an explicit narrative_motif field")
 
 
 def cmd_finalize(args) -> int:
@@ -673,32 +931,56 @@ def cmd_finalize(args) -> int:
     preset = qc.get("preset", "pilot")
     max_unresolved_low = int(cfg["mode_thresholds"][preset].get("max_unresolved_low_confidence", 0))
 
+    disclosure_error = _protocol_disclosure_error(
+        qc["protocol_disclosure"], qc.get("harness_model_record"), cfg["blind_retest_protocol"],
+    )
+    if disclosure_error:
+        raise ValueError(disclosure_error)
     if not qc.get("passed"):
         raise ValueError("cannot finalize tagged_corpus before blind QC passes its thresholds")
 
+    sources = None
+    if args.bundle:
+        bundle = read(Path(args.bundle).resolve())
+        sources = bundle.get("sources") if isinstance(bundle, dict) else None
+        if not isinstance(sources, dict):
+            raise ValueError("tagging input bundle must contain a sources object")
+
     adjudications = {}
-    adj_raw = None
+    adj_metadata = {}
     if args.adjudications:
         adj_path = Path(args.adjudications).resolve()
         if adj_path.is_file():
             adj_raw = read(adj_path)
-            adj_items = adj_raw.get("decisions", adj_raw) if isinstance(adj_raw, dict) else adj_raw
+            adj_metadata = adj_raw if isinstance(adj_raw, dict) else {}
+            if adj_metadata.get("status") == "pending_human_adjudication":
+                raise ValueError("adjudications status is pending_human_adjudication")
+            adj_items = adj_metadata.get("decisions", adj_raw)
             if isinstance(adj_items, list):
                 for item in adj_items:
-                    uid = str(item.get("unified_app_id") or "")
+                    uid = str(item.get("unified_app_id") or "") if isinstance(item, dict) else ""
                     if uid:
                         adjudications[uid] = item
             elif isinstance(adj_items, dict):
+                metadata_keys = {"adjudicated_by", "adjudicated_by_human", "adjudicator_role", "status", "pending"}
                 adjudications = {
                     str(k): v for k, v in adj_items.items()
-                    if adj_items is not adj_raw or k != "adjudicated_by"
+                    if adj_items is not adj_raw or k not in metadata_keys
                 }
+            if "pending" in adj_metadata and not any(
+                isinstance(adjudications.get(uid), dict) and adjudications[uid]
+                for uid in (str(prod["unified_app_id"]) for prod in products)
+            ):
+                raise ValueError("adjudications contains pending entries without valid decisions")
 
-    required_matches = ("theme_match", "presentation_match", "fusion_match", "narrative_intensity_match")
+    required_matches = (
+        "theme_match", "presentation_match", "fusion_match", "narrative_intensity_match",
+        "narrative_match", "visual_unit_match",
+    )
     unresolved_diffs = [
         d["unified_app_id"] for d in qc.get("disagreements", [])
         if any(d.get(key) is False for key in required_matches)
-        and not isinstance(adjudications.get(str(d["unified_app_id"])), dict)
+        and not (isinstance(adjudications.get(str(d["unified_app_id"])), dict) and adjudications[str(d["unified_app_id"])])
     ]
     if unresolved_diffs:
         raise ValueError(f"unresolved blind disagreements require explicit adjudication: {unresolved_diffs}")
@@ -707,27 +989,50 @@ def cmd_finalize(args) -> int:
     unresolved_low = []
     for prod in products:
         uid = str(prod["unified_app_id"])
+        original_confidence = prod.get("confidence")
         if uid in adjudications:
             dec = adjudications[uid]
             if not isinstance(dec, dict):
                 raise ValueError(f"{uid}: adjudication must be an object")
-            dec_by = str(dec.get("adjudicated_by") or (adj_raw.get("adjudicated_by") if isinstance(adj_raw, dict) else "") or "human")
+            if dec.get("status") == "pending_human_adjudication":
+                raise ValueError(f"{uid}: adjudication status is pending_human_adjudication")
+            dec_by = str(dec.get("adjudicated_by") or adj_metadata.get("adjudicated_by") or "human")
             if isinstance(dec.get("final_tags"), list) and dec["final_tags"]:
                 for t in dec["final_tags"]:
                     if t.get("tag_id") not in vocab_map:
                         raise ValueError(f"adjudication uses unknown tag_id: {t.get('tag_id')}")
                 prod["tags"] = dec["final_tags"]
+            _apply_narrative_adjudication(prod, dec, cfg)
+            intensity = _checked_narrative_intensity(prod, cfg)
             prod["adjudicated_by"] = dec_by
-            prod["adjudicated_by_human"] = (dec_by.strip().lower() == "human")
+            is_human = dec.get("adjudicated_by_human")
+            if not isinstance(is_human, bool):
+                is_human = adj_metadata.get("adjudicated_by_human")
+            if not isinstance(is_human, bool):
+                role = dec.get("adjudicator_role") or adj_metadata.get("adjudicator_role")
+                is_human = role == "human" if role else dec_by.strip().lower() == "human"
+            prod["adjudicated_by_human"] = is_human
             default_note = "人工复核确认" if prod["adjudicated_by_human"] else "复核确认"
             prod["adjudication_note"] = str(dec.get("note") or dec.get("decision") or default_note)
-            if prod.get("confidence") == "low":
+            if original_confidence == "low":
                 prod["confidence"] = "adjudicated"
-            applied_log.append({"unified_app_id": uid, "app_name": prod.get("app_name"), "note": prod["adjudication_note"]})
+            if sources is not None:
+                evidence_errors = _narrative_evidence_errors(prod, intensity, sources, cfg)
+                if evidence_errors:
+                    raise ValueError("；".join(evidence_errors))
+            applied_log.append({
+                "unified_app_id": uid, "app_name": prod.get("app_name"), "note": prod["adjudication_note"],
+                "adjudicated_by": dec_by, "adjudicated_by_human": is_human,
+            })
         if prod.get("confidence") == "low":
             unresolved_low.append(uid)
         prod[NARRATIVE_AXIS] = _checked_narrative(prod, cfg[NARRATIVE_AXIS]["controlled_enum"])
         prod["tags"] = _main_tags(prod)
+        for tag in prod["tags"]:
+            if tag.get("slot") == "presentation":
+                visual_error = _visual_confidence_error(tag, uid, original_confidence, cfg)
+                if visual_error:
+                    raise ValueError(visual_error)
 
     if len(unresolved_low) > max_unresolved_low:
         raise ValueError(f"unresolved low_confidence products remain ({len(unresolved_low)}): {unresolved_low}")
@@ -749,6 +1054,8 @@ def cmd_finalize(args) -> int:
             "sample_evaluated": qc["sample_evaluated"],
             "theme_primary_agreement": qc["theme_primary_agreement"],
             "presentation_agreement": qc.get("presentation_agreement"),
+            "visual_unit_agreement": qc.get("visual_unit_agreement"),
+            "visual_unit_distribution": qc.get("visual_unit_distribution"),
             "fusion_agreement": qc.get("fusion_agreement"),
             "narrative_intensity_agreement": qc.get("narrative_intensity_agreement"),
             "narrative_agreement": qc.get("narrative_agreement"),
@@ -775,6 +1082,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_vv.add_argument("--vocab", required=True)
     p_vv.add_argument("--preset", choices=("pilot", "full"), required=True)
     p_vv.add_argument("--prior-vocab", default=None, help="Prior pilot vocab JSON to enforce frozen tag_ids")
+    p_vv.add_argument("--draft-md", default=None, help="Draft Markdown signoff page to check against vocab warnings")
     p_vv.set_defaults(func=cmd_validate_vocab)
 
     p_vt = sub.add_parser("validate-tags", help="Validate Pass 2 tags against slots, vocab and non-marketing evidence rules")
@@ -806,6 +1114,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_fn.add_argument("--tags", required=True)
     p_fn.add_argument("--qc", required=True)
     p_fn.add_argument("--adjudications", default=None)
+    p_fn.add_argument("--bundle", default=None, help="Tagging input bundle for adjudicated narrative evidence checks")
     p_fn.add_argument("--output", required=True)
     p_fn.set_defaults(func=cmd_finalize)
     return parser
@@ -817,7 +1126,10 @@ def main() -> int:
     try:
         return args.func(args)
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        print(json.dumps({"status": "failed", "reason": str(exc)}, ensure_ascii=False))
+        result = {"status": "failed", "reason": str(exc)}
+        if args.command in NEXT_ACTIONS:
+            result.update(errors=[str(exc)], next_action=NEXT_ACTIONS[args.command])
+        print(json.dumps(result, ensure_ascii=False))
         return 2
 
 

@@ -252,22 +252,75 @@ GAP_COLUMNS = (
 )
 
 
+GAP_LEVELS = ("L1", "L2", "L3")
+
+
+def _read_gap_entries(path):
+    data = read(path)
+    gaps = data.get("gaps") if isinstance(data, dict) else data
+    if not isinstance(gaps, list):
+        raise ValueError("缺项登记须包含缺项数组。")
+    return gaps
+
+
+def _validate_gap_entries(gaps):
+    for index, gap in enumerate(gaps, start=1):
+        entry = f"缺项登记第 {index} 条"
+        if not isinstance(gap, dict):
+            raise ValueError(f"{entry}须为 JSON 对象。")
+        if ("id" in gap and "gap_id" not in gap) or ("level" in gap and "impact_level" not in gap):
+            raise ValueError(f"{entry}使用了旧键，请改用 gap_id 与 impact_level。")
+        for field in ("gap_id", "status"):
+            value = gap.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{entry}的 {field} 须为非空字符串。")
+        if gap.get("impact_level") not in GAP_LEVELS:
+            raise ValueError(f"{entry}的 impact_level 须为 L1、L2 或 L3。")
+
+
 def _load_gap_register(data_dir):
     path = data_dir / "gap_register.json"
     if not path.is_file():
         return []
-    data = read(path)
-    gaps = data.get("gaps") if isinstance(data, dict) else data
-    if not isinstance(gaps, list) or any(
-        not isinstance(gap, dict) or gap.get("impact_level") not in {"L1", "L2", "L3"} for gap in gaps
-    ):
-        raise ValueError("gap_register.json must contain a gaps array with L1, L2 or L3 entries")
+    gaps = _read_gap_entries(path)
+    _validate_gap_entries(gaps)
     return gaps
 
 
 def _open_gap_ids(gaps, level):
-    return [str(gap.get("gap_id") or "未编号") for gap in gaps if gap["impact_level"] == level
-            and str(gap.get("status") or "").strip().lower() not in {"closed", "resolved", "已关闭", "已解决"}]
+    _validate_gap_entries(gaps)
+    open_ids = []
+    for gap in gaps:
+        status = gap["status"].strip().lower()
+        if gap["impact_level"] != level or status in {"closed", "resolved", "已关闭", "已解决"}:
+            continue
+        if status == "superseded":
+            reasons = (gap.get(key) for key in ("superseded_by", "resolution", "reason"))
+            if any(value.strip() if isinstance(value, str) else value for value in reasons):
+                continue
+        open_ids.append(gap["gap_id"])
+    return open_ids
+
+
+def cmd_check_gaps(args) -> int:
+    path = Path(args.gaps) if args.gaps else Path(args.out_dir) / "research/data/gap_register.json"
+    result = {"status": "passed", "gap_count": 0, "open_l1": [], "open_l2": [], "open_l3": [],
+              "errors": []}
+    try:
+        gaps = _read_gap_entries(path)
+        result["gap_count"] = len(gaps)
+        for level in GAP_LEVELS:
+            result[f"open_{level.lower()}"] = _open_gap_ids(gaps, level)
+    except (OSError, ValueError) as exc:
+        result["errors"].append(str(exc))
+        result.update(status="failed", reason=str(exc), next_action="请按报错修正缺项登记文件后重新检查。")
+    else:
+        if result["open_l1"]:
+            reason = "仍有一级缺项未关闭。"
+            result["errors"].append(reason)
+            result.update(status="failed", reason=reason, next_action="请补齐一级缺项的证据或写明替代依据后重新检查。")
+    print(json.dumps(result, ensure_ascii=False))
+    return 2 if result["status"] == "failed" else 0
 
 
 def _gap_cell(value):
@@ -643,6 +696,18 @@ def cmd_build(args) -> int:
     main_card_roles = {"top10_revenue", "download_supplement", "whitelist_exception"}
     ref_sgs = list(preset_cfg["market_overview_reference_subgenres"])
     win = run_state["window"]
+    release_window = run_state.get("new_release_window") or roster.get("new_release_window") or {}
+    release_start, release_end = release_window.get("start"), release_window.get("end")
+    release_window_html = ""
+    if release_start and release_end:
+        release_window_html = (
+            '<span>新品首发资格窗（运行日滚动近 1 年，含起止日）'
+            f' {esc(release_start)} 至 {esc(release_end)}</span>'
+        )
+    else:
+        cutoff = release_start or run_state.get("new_release_cutoff_date") or roster.get("new_release_cutoff_date")
+        if cutoff:
+            release_window_html = f'<span>新品首发资格窗（登记的起始日） {esc(cutoff)}</span>'
     retrieved_at = next((v.get("retrieved_at", "") for v in merged_sources.values() if v.get("retrieved_at")), run_state.get("updated_at", "")[:10])
     title = run_state.get("report_title") or "休闲品类题材与呈现 Tag 市场研究看板"
 
@@ -773,7 +838,8 @@ def cmd_build(args) -> int:
     <h1>{esc(title)}</h1>
     <div class="meta-tags">
       <span>品类范围：{esc('、'.join(subgenres_cfg['subgenres'][s]['display_name'] for s in enabled_sgs))}</span>
-      <span>统计窗口：{esc(win['start'])} 至 {esc(win['end'])}</span>
+      <span>市场与增量统计窗（近 6 个完整自然月） {esc(win['start'])} 至 {esc(win['end'])}</span>
+      {release_window_html}
       <span>采集日：{esc(retrieved_at)}</span>
       <span>口径：Sensor Tower 全球 IAP 净收入估算（含中国大陆 iOS）</span>
     </div>
@@ -970,7 +1036,7 @@ def cmd_build(args) -> int:
         dl_d, _ = midx.delta_tok(eid, "downloads", digits=2, divisor=1_000_000, suffix="M")
         r3_rev, _ = midx.derived_tok(f"{eid}_rev_r3m", digits=2, divisor=1_000_000, suffix="M USD")
         pills = _render_product_tag_pills(tp)
-        stage_badge = "测试期新品" if p.get("release_stage") == "soft_launch" else "近12月全球首发"
+        stage_badge = "测试期新品" if p.get("release_stage") == "soft_launch" else "滚动一年内全球首发"
         boundary_badge = '<span class="badge badge-opp">边界席</span>' if p.get("is_boundary_seat") else ""
         date_html = "".join(f'<span>{label}：{esc(value)}</span>' for label, value in _launch_dates(p))
         jump = (
@@ -1009,7 +1075,7 @@ def cmd_build(args) -> int:
         sixth_readings.append(f"{esc(label)}净收入增量 {delta_text}（第 5 席为边界席：{boundary_text}）")
     sec3_html = f"""<section id="sec-new-apps" class="dash-section">
   <h2>3. 高增新品观察</h2>
-  <p class="scope-pill">筛选口径：ST Release Date (WW) 近 12 月动态枚举 + 主类 6014 + custom_fields_include_unified_apps=false + 最早发行日二次核验</p>
+  <p class="scope-pill">在 Sensor Tower 游戏大类中，按全球发行日期筛选运行日滚动近 1 年内的新品，含起止日。逐个复核最早发行日期，排除挂靠在老包下的应用。</p>
   <div class="new-app-list">{''.join(new_cards) or '<p class="missing" data-status="missing">当前窗口内暂无符合口径的高增真新品。</p>'}</div>
   <details class="info-fold"><summary>查看剔除与复核审计表（{len(roster.get('excluded_audit') or [])} 条）</summary>
     <p><strong>第 6 名实数</strong>：{'；'.join(sixth_readings)}</p>
@@ -1205,6 +1271,31 @@ def cmd_build(args) -> int:
         threshold = f"（门槛 ≥{qc_thresholds[threshold_key]:.0%}）" if threshold_key else ""
         qc_readings.append(f'{label}：<strong>{reading}</strong>{threshold}')
 
+    unit_agreement = qc_sum.get("visual_unit_agreement")
+    if unit_agreement is not None:
+        qc_readings.append(f'判定单元一致率 <strong>{unit_agreement:.1%}</strong>')
+    unit_distribution = qc_sum.get("visual_unit_distribution") or {}
+    unit_labels = {
+        "board_and_scene_pair": "棋盘与主场景",
+        "gameplay_board": "实机棋盘",
+        "main_scene": "实机主场景",
+        "promo_or_portrait_only": "仅有宣传图或立绘",
+    }
+    unit_readings = []
+    for side, label in (("primary", "主判"), ("blind", "盲测")):
+        counts = unit_distribution.get(side)
+        if counts is not None:
+            total = sum(counts.values())
+            readings = "、".join(
+                f"{unit_label} {counts[unit]} 个（{counts[unit] / total:.1%}）"
+                for unit, unit_label in unit_labels.items() if total and unit in counts
+            )
+            unit_readings.append(f'<li>{label} · {readings or "无样本"}</li>')
+    unit_distribution_html = (
+        f'<div class="sub-block"><strong>判定单元分布</strong><ul>{"".join(unit_readings)}</ul></div>'
+        if unit_readings else ""
+    )
+
     qc_axes = (("theme", "主题材"), ("presentation", "呈现"), ("fusion", "融合"),
                ("narrative_intensity", "叙事强度"))
 
@@ -1264,6 +1355,8 @@ def cmd_build(args) -> int:
   <div class="vocab-grid">{''.join(vocab_cards)}</div>
   <h3>6.2 一致性重测读数与裁决记录</h3>
   <p class="scope-pill">{esc(qc_sum['protocol_disclosure'])}</p>
+  <p>当前宿主实测母子代理同模型且无可核跨模型记录，宿主换版本须重测。</p>
+  {unit_distribution_html}
   <p>抽检样本：{qc_sum['sample_evaluated']} 款 · {' · '.join(qc_readings)}。</p>
   <details class="info-fold"><summary>展开抽检逐款明细与裁决记录</summary>
     <div class="table-wrap"><table class="data-table"><thead><tr><th>产品</th>{qc_headers}<th>全轴判定</th><th>Jaccard 重叠率</th></tr></thead>
@@ -1274,7 +1367,10 @@ def cmd_build(args) -> int:
   <h3>6.3 统计口径与估算边界声明</h3>
   <div class="scope-box">
     <ul>
-      <li><strong>收入与下载来源</strong>：全部市场大盘、榜单、近似 RPD 与环比均由 Sensor Tower 双端合并估算算出（<code>revenue_basis: iap_net</code>），为扣除平台分成后的应用内购净收入估算，不含广告变现（IAA）及站外网页充值；若与未扣渠道分成的毛流水口径横向对照，通常存在约三成渠道分成差异。</li>
+      <li><strong>两个统计窗口</strong>。市场规模与增量使用近 6 个完整自然月，增量按窗内后 3 个月减前 3 个月计算。新品首发资格按运行日滚动近 1 年核验，起止日期均计入。若在 2 月 29 日运行，起点取上一年 2 月 28 日。首发晚于市场统计窗末日的合格新品因缺完整月数据，暂不参与增量排名。</li>
+      <li><strong>画风判定单元</strong>。按第 1 至第 5 张的顺序扫描所有已取得的商店截图。合成和三消优先找棋盘与主场景，以棋盘和核心交互物件为主，主场景用于核验。混变益智优先看实机棋盘，模拟经营优先看实机主场景。缺少配对画面时注明原因，单边截图最高为中置信度。补证后仍无实机图的样本只记低置信度，不计入画风占比。</li>
+      <li><strong>画风占比与一致率</strong>。报告画风占比前先列判定单元分布，跨产品只在相同判定单元内比较。盲测按同一规则独立选图，一致率衡量同一词表下的标注稳定性。判定单元有分歧时交终裁。</li>
+      <li><strong>收入与下载来源</strong>：全部市场大盘、榜单、近似 RPD 与环比均由 Sensor Tower 双端合并估算算出，为扣除平台分成后的应用内购净收入估算，不含广告变现（IAA）及站外网页充值；若与未扣渠道分成的毛流水口径横向对照，通常存在约三成渠道分成差异。</li>
       <li><strong>地理与商店覆盖</strong>：采用 Sensor Tower 全球口径（App Store + Google Play，包含中国大陆 iOS，不含中国大陆第三方安卓商店与小游戏）。纯中国大陆 iOS 发行产品已在产品卡展开层单独注记。</li>
       <li><strong>隔离与去重原则</strong>：模拟经营与混变益智的下载增补位、以及混变益智中个别 3D 配对单列特例均不计入自动标签池 CR10 分母。混变益智单列，其余三类玩法品类（合成、三消、模拟经营）单独汇总。</li>
     </ul>
@@ -1411,6 +1507,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_b.add_argument("--script-mode", choices=("zero_js", "whitelisted_inline_js"), default=None)
     p_b.set_defaults(func=cmd_build)
 
+    p_g = sub.add_parser("check-gaps", help="Validate the gap register and list open gaps")
+    gap_input = p_g.add_mutually_exclusive_group(required=True)
+    gap_input.add_argument("--gaps")
+    gap_input.add_argument("--out-dir")
+    p_g.set_defaults(func=cmd_check_gaps)
+
     p_p = sub.add_parser("pack-bundle", help="Run final HTML desensitization scan, size check and build _bundle.zip")
     p_p.add_argument("--out-dir", required=True)
     p_p.set_defaults(func=cmd_pack_bundle)
@@ -1423,7 +1525,10 @@ def main() -> int:
     try:
         return args.func(args)
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        print(json.dumps({"status": "failed", "reason": str(exc)}, ensure_ascii=False))
+        result = {"status": "failed", "reason": str(exc)}
+        if args.command == "build":
+            result["next_action"] = "请按失败原因核对报告目录和输入产物，修正后重新编译。"
+        print(json.dumps(result, ensure_ascii=False))
         return 2
 
 

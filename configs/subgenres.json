@@ -27,7 +27,10 @@
     "new_release_st_guard": {
       "field_name": "Release Date (WW)",
       "month_format": "YYYY/MM",
-      "dynamic_from_window_end": true,
+      "dynamic_from_run_date": true,
+      "window_mode": "rolling_1y_from_run_date",
+      "inclusive_bounds": true,
+      "feb29_fallback": "prev_year_02_28",
       "unified_app_primary_categories": [
         "6014"
       ],

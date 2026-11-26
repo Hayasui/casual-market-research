@@ -101,6 +101,21 @@ def build_window_spec(window_end: str, total_months: int = 6, recent_months: int
     }
 
 
+def build_rolling_new_release_window(run_date: date | str) -> dict:
+    if isinstance(run_date, str):
+        run_date = date.fromisoformat(run_date)
+    previous_year = run_date.year - 1
+    clamped = run_date.month == 2 and run_date.day == 29
+    start = run_date.replace(year=previous_year, day=28 if clamped else run_date.day)
+    return {
+        "start": start.isoformat(),
+        "end": run_date.isoformat(),
+        "inclusive": True,
+        "rule": "rolling_1y_from_run_date",
+        "leap_day_clamped": clamped,
+    }
+
+
 def strip_url_query(url: str) -> str:
     if not isinstance(url, str) or not url:
         return ""
@@ -231,11 +246,14 @@ def cmd_init_run(args) -> int:
         raise ValueError(f"unknown preset: {args.preset}")
     out_dir = validate_out_dir(Path(args.out_dir), workspace_cfg)
     gdef = subgenres_cfg["global_st_defaults"]
+    run_date = date.fromisoformat(args.run_date) if args.run_date else date.today()
+    release_window = build_rolling_new_release_window(run_date)
+    cutoff_date = release_window["start"]
+    release_months = [m.replace("-", "/") for m in months(cutoff_date, release_window["end"])]
     win = build_window_spec(
-        args.window_end,
+        args.window_end or shift_ym(run_date.isoformat()[:7], -1),
         total_months=int(gdef.get("window_complete_months", 6)),
         recent_months=int(gdef.get("recent_growth_months", 3)),
-        lookback_months=int(gdef.get("new_release_lookback_months", 12)),
     )
     preset_cfg = subgenres_cfg["presets"][args.preset]
     for rel in (
@@ -261,9 +279,11 @@ def cmd_init_run(args) -> int:
         "months": win["months"],
         "prior_3m": win["prior_3m"],
         "recent_3m": win["recent_3m"],
-        "new_release_months": win["new_release_months"],
-        "new_release_cutoff_date": win["new_release_cutoff_date"],
-        "recommended_daily_query_start_date": shift_ym(win["new_release_cutoff_date"][:7], -2) + "-01",
+        "run_date": run_date.isoformat(),
+        "new_release_window": release_window,
+        "new_release_cutoff_date": cutoff_date,
+        "new_release_months": release_months,
+        "recommended_daily_query_start_date": shift_ym(cutoff_date[:7], -2) + "-01",
         "enabled_subgenres": list(preset_cfg["enabled_subgenres"]),
         "market_overview_reference_subgenres": list(preset_cfg["market_overview_reference_subgenres"]),
         "html_script_mode": preset_cfg["html_script_mode"],
@@ -276,7 +296,7 @@ def cmd_init_run(args) -> int:
     state_path = out_dir / "research/run_state.json"
     write(state_path, state)
     print(json.dumps({"status": "initialized", "run_state": str(state_path), "preset": args.preset,
-                      "window": win["window"], "new_release_months": win["new_release_months"]}, ensure_ascii=False))
+                      "window": win["window"], "new_release_months": release_months}, ensure_ascii=False))
     return 0
 
 
@@ -514,7 +534,60 @@ def _st_metric_value(row, metric):
     return next((decimal_value(row[key]) for key in keys if row.get(key) is not None), None)
 
 
-def _load_product_series(manifest, out_dir, window, win_months, retrieved_at, st_sources, *, cutoff_date):
+def _read_revenue_ranking(path):
+    _, payload = _load_checked_raw(Path.cwd(), path)
+    rows = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        raise ValueError(f"{path} 缺少榜单数组")
+    ranking = []
+    for index, row in enumerate(rows, 1):
+        uid = str(row.get("unified_app_id") or "").strip() if isinstance(row, dict) else ""
+        if not uid:
+            raise ValueError(f"{path} 第 {index} 行缺少 unified_app_id")
+        revenue = _st_metric_value(row, "revenue")
+        if revenue is None:
+            raise ValueError(f"{path} 第 {index} 行缺少收入")
+        ranking.append((uid, revenue))
+    return ranking
+
+
+def cmd_check_coverage(args) -> int:
+    result = {"merged_count": 0, "attributable_count": 0, "unattributable_rows": 0,
+              "boundary_passed": False, "errors": []}
+    errors = result["errors"]
+    try:
+        tolerance = decimal_value(args.tolerance)
+        if not 0 <= tolerance <= 1:
+            raise ValueError("tolerance 必须介于 0 和 1 之间")
+        merged = _read_revenue_ranking(args.merged)
+        result["merged_count"] = len(merged)
+        singles = [row for path in args.singles for row in _read_revenue_ranking(path)]
+        single_ids = {uid for uid, _ in singles}
+        merged_ids = {uid for uid, _ in merged}
+        unattributable = sum(uid not in single_ids for uid, _ in merged)
+        outside_max = max((revenue for uid, revenue in singles if uid not in merged_ids), default=None)
+        boundary_passed = outside_max is None or bool(merged and merged[-1][1] >= outside_max * (1 - tolerance))
+        result.update(attributable_count=len(merged) - unattributable,
+                      unattributable_rows=unattributable, boundary_passed=boundary_passed)
+        if unattributable:
+            errors.append(f"合并榜有 {unattributable} 行无法归入单子类并集")
+        if not boundary_passed:
+            errors.append("合并榜末位收入低于榜外最高收入的容差下限")
+    except (OSError, ValueError) as exc:
+        errors.append(str(exc))
+
+    result["status"] = "failed" if errors else "passed"
+    if errors:
+        result["reason"] = "。".join(errors)
+        result["next_action"] = "核对合并榜和各单子类榜的查询口径、统一应用 ID 与收入，再重跑覆盖检查。"
+    if args.output:
+        write(Path(args.output), result)
+    print(json.dumps(result, ensure_ascii=False))
+    return 2 if errors else 0
+
+
+def _load_product_series(manifest, out_dir, window, win_months, retrieved_at, st_sources, *,
+                         cutoff_date, new_release_end):
     monthly = {metric: {} for metric in ("revenue", "downloads")}
     source_ids = {metric: {} for metric in monthly}
     first_positive = {}
@@ -551,7 +624,7 @@ def _load_product_series(manifest, out_dir, window, win_months, retrieved_at, st
                 if day and (daily_min_date is None or day < daily_min_date):
                     daily_min_date = day
                 val = _st_metric_value(row, metric)
-                if uid and day and day <= window["end"] and val is not None and val > 0:
+                if uid and day and day <= new_release_end and val is not None and val > 0:
                     first_positive[uid] = min(day, first_positive.get(uid, day))
     if daily_min_date is not None and daily_min_date >= cutoff_date:
         raise ValueError(
@@ -634,12 +707,13 @@ def _rank_new_candidates(candidates, rule, fixed):
     def downloads_key(c):
         return -c["dl_delta_3m"], -c["rev_delta_3m_usd"], c["unified_app_id"]
 
-    complete = [c for c in candidates if not c["exclusion_reason"]]
+    complete = [c for c in candidates if c["ranking_eligible"]]
     revenue = sorted((c for c in complete if c["rev_delta_3m_usd"] > 0), key=revenue_key)
     if rule == "rev_delta_5":
         for candidate in complete:
             if candidate["rev_delta_3m_usd"] <= 0:
                 candidate["exclusion_reason"] = "近段净收入增量不大于零"
+                candidate["ranking_eligible"] = False
         return revenue[:fixed], revenue[fixed] if len(revenue) > fixed else None
     if rule == "rev_delta_3_dl_delta_2":
         revenue_seats = revenue[:3]
@@ -665,6 +739,7 @@ def cmd_build(args) -> int:
     prior_months = months(run_state["prior_3m"]["start"], run_state["prior_3m"]["end"])
     recent_months = months(run_state["recent_3m"]["start"], run_state["recent_3m"]["end"])
     cutoff_date = run_state["new_release_cutoff_date"]
+    new_release_end = run_state["new_release_window"]["end"] if "new_release_window" in run_state else window["end"]
     prov_map = workspace_cfg["sanitization_policy"]["provider_display_map"]
 
     st_sources: dict[str, dict] = {}
@@ -837,6 +912,7 @@ def cmd_build(args) -> int:
     whitelist_resolved = manifest.get("whitelist_resolved", {})
     monthly, product_source_ids, first_positive, daily_min_date, daily_query_start = _load_product_series(
         manifest, out_dir, window, win_months, retrieved_at, st_sources, cutoff_date=cutoff_date,
+        new_release_end=new_release_end,
     )
     union_files = manifest.get("union_audit") or {}
     union_path = args.union_audit or (union_files if isinstance(union_files, str) else None)
@@ -850,6 +926,8 @@ def cmd_build(args) -> int:
     }
     yl_info_map = manifest.get("yilan_app_info") or {}
     new_release_audit = {}
+    union_launch_dates = {}
+    late_release_reason = "上线晚于 6 个月完整月统计窗末日，暂缺完整月序列"
 
     def _row_excluded_reason(sg_cfg: dict, row: dict) -> str | None:
         nm_norm = normalize_name(row.get("unified_app_name") or row.get("app_name") or "")
@@ -1020,10 +1098,22 @@ def cmd_build(args) -> int:
         # Freeze the candidate union after loading six months and checking launch dates.
         sg_new = new_app_files.get(sg_id, {})
         seen_new_uids: dict[str, tuple[dict, str]] = {}
+        recent_revenue_ranks: dict[str, int] = {}
         if sg_id in union_candidates:
             for row in union_candidates[sg_id]:
+                uid = str(row["unified_app_id"])
                 stage = row.get("release_stage", "soft_launch" if row.get("soft_launch_status") == "verified" else "global")
-                seen_new_uids[str(row["unified_app_id"])] = (row, stage)
+                channels = {source["channel"]: source.get("rank") for source in row.get("source_channels") or []}
+                if not row.get("discovery_channel"):
+                    channel = next((key for key in ("sensor_tower_revenue_top20", "sensor_tower_downloads_top20")
+                                    if key in channels), None)
+                    if channel is None and "third_party_new_apps" in channels:
+                        channel = "third_party"
+                    row = {**row, "discovery_channel": channel}
+                rank = channels.get("sensor_tower_revenue_top20")
+                if isinstance(rank, int) and rank > 0:
+                    recent_revenue_ranks[uid] = rank
+                seen_new_uids[uid] = (row, stage)
         else:
             for metric in ("revenue", "downloads"):
                 fpath = sg_new.get(metric)
@@ -1041,14 +1131,18 @@ def cmd_build(args) -> int:
                     retrieved_at, raw_rel=safe_rel_path(path, out_dir),
                 )
                 rows = raw.get("data", []) if isinstance(raw, dict) else raw
-                for row in rows[:20]:
+                for rank, row in enumerate(rows[:20], 1):
                     uid = str(row.get("unified_app_id") or "")
                     if uid:
+                        if metric == "revenue":
+                            recent_revenue_ranks.setdefault(uid, rank)
+                        row = {"discovery_channel": f"sensor_tower_{metric}_top20", **row}
                         prior_row = seen_new_uids.get(uid, ({}, "global"))[0]
                         seen_new_uids[uid] = ({**row, **{k: v for k, v in prior_row.items() if v}}, "global")
             for row in sg_new.get("soft_launch_resolved") or []:
                 uid = str(row.get("unified_app_id") or "")
                 if uid:
+                    row = {"discovery_channel": "third_party", **row}
                     prior_row, stage = seen_new_uids.get(uid, ({}, "soft_launch"))
                     seen_new_uids[uid] = ({**row, **{k: v for k, v in prior_row.items() if v}}, stage)
 
@@ -1062,14 +1156,45 @@ def cmd_build(args) -> int:
             launch_date = first_positive.get(uid)
             if not launch_date and sg_id in union_candidates:
                 launch_date = parse_date_flexible(row.get("first_observed_date_st"), require_day=True)
+                if launch_date and launch_date <= new_release_end:
+                    union_launch_dates.setdefault(uid, launch_date)
             if not launch_date:
                 reason = "excluded_launch_unverified"
                 print(f"{sg_id} {uid}: {reason}（ST 日序列与并集审计均无可用首发日）", file=sys.stderr)
             elif launch_date < cutoff_date:
                 reason = f"最早发行日 {launch_date} 早于近12月门槛 {cutoff_date}"
-            elif launch_date > window["end"]:
-                reason = f"最早发行日 {launch_date} 晚于统计期"
-            candidates.append(_audit_new_candidate(uid, row, launch_date, monthly, prior_months, recent_months, reason))
+            elif launch_date > new_release_end:
+                reason = f"最早发行日 {launch_date} 晚于新品滚动窗口末日 {new_release_end}"
+            elif launch_date > window["end"] and not reason:
+                reason = late_release_reason
+
+            channel = row.get("discovery_channel")
+            fetched_revenue = bool(monthly["revenue"].get(uid))
+            has_st_revenue = fetched_revenue or uid in recent_revenue_ranks
+            third_party_no_revenue = channel == "third_party" and not has_st_revenue
+            if third_party_no_revenue and not reason:
+                reason = "第三方发现的候选暂无 ST 收入"
+            candidate = _audit_new_candidate(uid, row, launch_date, monthly, prior_months, recent_months, reason)
+            candidate["discovery_channel"] = channel
+            candidate["revenue_status"] = "ok" if has_st_revenue else "no_data"
+            candidate["fetch_status"] = "fetched" if fetched_revenue else (
+                "not_needed" if third_party_no_revenue else "pending"
+            )
+            candidate["ranking_eligible"] = not candidate["exclusion_reason"]
+            candidate["is_cutoff_boundary_date"] = launch_date == cutoff_date
+            candidates.append(candidate)
+
+        if not recent_revenue_ranks:
+            comparable = [c for c in candidates if c["discovery_channel"] != "third_party"
+                          and c["revenue_status"] == "ok" and c["recent_3m_rev_usd"] is not None
+                          and c["exclusion_reason"] != late_release_reason]
+            comparable.sort(key=lambda c: (-c["recent_3m_rev_usd"], c["unified_app_id"]))
+            recent_revenue_ranks = {c["unified_app_id"]: rank for rank, c in enumerate(comparable, 1)}
+        for candidate in candidates:
+            candidate["daily_status"] = (
+                "required" if candidate["discovery_channel"] != "third_party"
+                and recent_revenue_ranks.get(candidate["unified_app_id"], 13) <= 12 else "not_needed"
+            )
 
         target = sg_cfg["new_apps_target"]
         fixed = int(target.get("fixed", target.get("max", 5)))
@@ -1110,7 +1235,7 @@ def cmd_build(args) -> int:
                     values.setdefault(ym, Decimal("0.00"))
 
         for candidate in candidates:
-            if candidate["exclusion_reason"]:
+            if candidate["exclusion_reason"] and candidate["exclusion_reason"] != late_release_reason:
                 excluded_audit.append({
                     "subgenre_id": sg_id, "app_name": candidate["app_name"],
                     "unified_app_id": candidate["unified_app_id"], "stage": "new_release",
@@ -1178,10 +1303,12 @@ def cmd_build(args) -> int:
     tagging_products: list[dict] = []
     fake_zero_count = 0
     matched_meta_count = 0
+    launch_date_reconciliation_audit = []
 
     for uid, prod in roster_by_uid.items():
         eid = prod["entity_id"]
-        prod["effective_launch_date"] = prod.get("effective_launch_date") or first_positive.get(uid)
+        prod["effective_launch_date"] = prod.get("effective_launch_date") or first_positive.get(uid) or union_launch_dates.get(uid)
+        prod["is_cutoff_boundary_date"] = prod["effective_launch_date"] == cutoff_date
         # Attach sub_app_details Game IQ reference if available
         for ios_id in prod["ios_app_ids"]:
             if ios_id in sub_app_tag_overrides:
@@ -1231,6 +1358,25 @@ def cmd_build(args) -> int:
             prod["metadata_status"] = "available"
             matched_meta_count += 1
             break
+
+        publisher_start = prod["publisher_start"]
+        effective_launch_date = prod["effective_launch_date"]
+        reconciliation_reason = None
+        if bool(publisher_start) != bool(effective_launch_date):
+            reconciliation_reason = "publisher_start 缺失" if not publisher_start else "effective_launch_date 缺失"
+        elif publisher_start and effective_launch_date and (
+            (publisher_start < cutoff_date) != (effective_launch_date < cutoff_date)
+        ):
+            reconciliation_reason = "商店发行日与 ST 生效首发日分居新品门槛两侧"
+        if reconciliation_reason:
+            launch_date_reconciliation_audit.append({
+                "unified_app_id": uid,
+                "app_name": prod["app_name"],
+                "publisher_start": publisher_start,
+                "effective_launch_date": effective_launch_date,
+                "cutoff_date": cutoff_date,
+                "reason": reconciliation_reason,
+            })
 
         # Parse app_detail_desc
         desc_text, subtitle = "", str(info_data.get("subtitle") or "")
@@ -1461,6 +1607,7 @@ def cmd_build(args) -> int:
         "excluded_audit": excluded_audit,
         "cross_column_dedup_log": cross_column_dedup_log,
         "new_release_audit": new_release_audit,
+        "launch_date_reconciliation_audit": launch_date_reconciliation_audit,
         "daily_min_date": daily_min_date,
         "daily_query_start": daily_query_start,
         "subgenre_breakdown_audit": subgenre_breakdown_audit,
@@ -1473,6 +1620,13 @@ def cmd_build(args) -> int:
             "yilan_fake_zero_detected_count": fake_zero_count,
         },
     }
+    for key in ("run_date", "new_release_window", "new_release_cutoff_date", "new_release_months",
+                "recommended_daily_query_start_date"):
+        if key in run_state:
+            product_roster[key] = run_state[key]
+    if manifest.get("ranking_coverage_audit"):
+        _, coverage_audit = _load_checked_raw(out_dir, manifest["ranking_coverage_audit"])
+        product_roster["ranking_coverage_audit"] = coverage_audit
     tagging_bundle = {
         "schema_version": "1.0.0",
         "preset": preset,
@@ -1579,7 +1733,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_init = sub.add_parser("init-run", help="Initialize report directory, date windows and research/run_state.json")
     p_init.add_argument("--out-dir", required=True, help="Absolute report output directory outside skill dir")
     p_init.add_argument("--preset", choices=("pilot", "full"), default="pilot")
-    p_init.add_argument("--window-end", required=True, help="Last complete calendar month (YYYY-MM)")
+    p_init.add_argument("--window-end", help="Last complete calendar month (YYYY-MM), defaults to the month before run-date")
+    p_init.add_argument("--run-date", help="Run date (YYYY-MM-DD), defaults to today")
     p_init.add_argument("--title", default="", help="Optional custom report title")
     p_init.set_defaults(func=cmd_init_run)
 
@@ -1588,6 +1743,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_oss.add_argument("--out-file", required=True, help="Output path for complete JSON")
     p_oss.add_argument("--timeout", type=int, default=30)
     p_oss.set_defaults(func=cmd_fetch_oss)
+
+    p_coverage = sub.add_parser("check-coverage", help="Check merged ranking against single-subgenre rankings")
+    p_coverage.add_argument("--merged", required=True, help="Merged revenue ranking JSON")
+    p_coverage.add_argument("--singles", nargs="+", required=True, help="Single-subgenre revenue ranking JSON files")
+    p_coverage.add_argument("--tolerance", default="0.005", help="Relative tolerance for the last ranked app")
+    p_coverage.add_argument("--output", help="Optional JSON audit output path")
+    p_coverage.set_defaults(func=cmd_check_coverage)
 
     p_build = sub.add_parser("build", help="Normalize Stage 1 raw files into market_input, roster, chart specs and tagging bundle")
     p_build.add_argument("--out-dir", required=True, help="Report directory initialized by init-run")
@@ -1605,7 +1767,10 @@ def main() -> int:
     try:
         return args.func(args)
     except (OSError, ValueError, KeyError, TypeError) as exc:
-        print(json.dumps({"status": "failed", "reason": str(exc)}, ensure_ascii=False))
+        print(json.dumps({
+            "status": "failed", "reason": str(exc),
+            "next_action": "按失败原因核对参数、文件路径和输入数据，修正后重跑。",
+        }, ensure_ascii=False))
         return 2
 
 
