@@ -41,7 +41,7 @@ git clone https://github.com/Hayasui/casual-market-research.git
 
 ## 使用
 
-在助手会话中可以直接提出需求。
+在助手会话中可以直接提出需求。不熟悉这个技能的话，先读 [使用指南](GUIDE.md)，一页讲清怎么开口与中间会停在哪一步。
 
 > 帮我做一份休闲品类题材供给差看板，先跑合成一类。
 
