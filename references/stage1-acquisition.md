@@ -8,15 +8,17 @@
 
 ## 一、Step 1.0：初始化与探针（1 分钟）
 
-1. **确定 `<报告目录>` 与统计窗**：
-   - 未指定目录时，以 `configs/workspace.json` 中的 `default_report_root` 为父目录建立 `<报告目录名>/`（如 `202611_merge_pilot/`）；严禁写入技能目录或 `readonly_paths_blacklist`。
-   - `init-run` 默认使用合成试点档 `pilot` 和系统当日，校验报告路径并生成统计窗口，写入 `research/run_state.json`。
+1. **确定 `<报告目录>` 与开机自检**：
+   - 显式 `--out-dir` 优先；未指定目录时，按 `configs/workspace.json` 的 `default_report_subdir` 与 `report_root_resolution` 推导为 `<pwd>/reports/<报告目录名>/`（如 `<pwd>/reports/202611_merge_pilot/`）；脚本仍强制通过 `--out-dir` 传入绝对路径，严禁写入技能目录或 `readonly_paths_blacklist`。
+   - 开工先跑 `doctor --out-dir <报告目录> --write-probe` 校验路径边界、可写性与技能包完整性，再跑 `init-run`（默认使用合成试点档 `pilot` 和系统当日，生成统计窗口并写入 `research/run_state.json`），两条命令均使用 `python -B`：
      ```text
-     python <Skill目录>/scripts/data_pipeline.py init-run --out-dir <报告目录>
+     python -B <Skill目录>/scripts/data_pipeline.py doctor --out-dir <报告目录> --write-probe
+     python -B <Skill目录>/scripts/data_pipeline.py init-run --out-dir <报告目录>
      ```
+   - `doctor` 输出中的 `agent_level_checks_pending` 须由主会话按第 2 条补跑两条只读 MCP 探针；首次在本工作区运行或宿主换版本时，另补一次 `remote` 子代理读图核验。
    - 复跑历史日期时加 `--run-date YYYY-MM-DD`。全量研究加 `--preset full`。市场主窗口默认截至运行日的上一个完整自然月，共 6 个完整自然月，拆为前后各 3 个月。需要指定市场窗口末月时才加 `--window-end YYYY-MM`。
    - 新品窗按运行日滚动近 1 年，从上一年同日到运行日，双端都含当天。运行日为 2 月 29 日时，起点回退到上一年 `02-28`。`Release Date (WW)` 月枚举覆盖滚动窗触及的所有月份，入池仍按核实后的日期逐日判断。
-2. **MCP 权限探针**：新会话首步执行 2 次最小只读调用——ST `sensortower-list-help-sections({})` 与元数据通道 `data-yilan-mcp-get-current-time({})`，确认权限有效后再取数。
+2. **MCP 权限探针**：配合 `doctor` 返回的 `agent_level_checks_pending`，新会话首步执行 2 次最小只读调用——ST `sensortower-list-help-sections({})` 与元数据通道 `data-yilan-mcp-get-current-time({})`，确认权限有效后再取数。
 3. **`full` 模式专属前置反查（`pilot` 跳过）**：
    - **混变益智子类枚举反查（1 次调用）**：按 `configs/subgenres.json` 中 `hybrid_puzzle.full_preflight_subgenre_discovery` 调 1 次 `sensortower-get-app-market-size(breakdown="game_sub_genre", custom_fields=[Hybridcasual, Puzzle])`，落盘 `research/raw/st_preflight_hybrid_puzzle_subgenres.json`。记录实际命中的 `Game Sub-genre` 列表，确认传统益智排除项（`Word` / `Trivia` / `Jigsaw` / `Hidden Objects` / `Riddle` / `Environmental`）在当前 ST 枚举中的准确拼写。2026-11-25 实测：ST 返回的是复数 `Hidden Objects`，`Riddle` 与 `Environmental` 各对应脑筋急转弯与潜行环境解谜；单数 `Hidden Object` 与 `Action Puzzle` 不是 ST 枚举，已从配置与本行删除。〔待核〕若确认 ST `exclude: true` 生效可直接下推过滤，否则一律保留在 `data_pipeline.py` 后置排除。
    - **边缘锚点复查（≤6 次调用）**：对 `configs/subgenres.json` 登记的模拟经营次级待核锚点（`Pizza Ready!`、`Burger Please!`、`My Mini Mart`、`My Supermarket Simulator 3D®`、`Idle Restaurant Tycoon`）及混变下载池边缘款（`Pocket Sort: Coin Merge Puzzle`），必要时用 `sensortower-get-sub-app-details(app_id=<ios_id>, country="US")` 核查其美区 iOS `genre / sub_genre / product_model`，记录留档。
@@ -114,9 +116,10 @@
 
 ---
 
-## 五、Stage 1 出口与轮次衔接
+## 五、Stage 1 出口与阶段衔接
 
-- **阶段交接落盘**。每阶段交接时同步落盘 `research/run_state.json` 与 `research/data/packet_manifest.json`，让阶段状态与交接产物清单对应。Stage 1 的状态写为 `stage1_done`。
-
-- **`pilot` 模式（2 轮规划）**：确认 `market_result.json` 0 缺月、0 冲突且 `tagging_input_bundle.json` 已就绪后，**不在本处停顿**，同会话直接进入 Stage 2 Pass 1 与 Pass 1.5，停在人工签字词表处结束 Round 1。
-- **`full` 模式（3 轮规划）**：确认四品类大盘 0 缺月、边缘锚点无漏网、图片全部落盘后结束 Round 1，向用户回报四品类取数摘要并输出 Round 2 接力指令（附 `<报告目录>` 绝对路径、指定仅读 `references/stage2-tagging.md`）。
+- **阶段收口落盘**。确认 `market_result.json` 0 缺月、0 冲突、`tagging_input_bundle.json` 与图片全部落盘后，执行阶段收口命令（校验 Stage 1 产物并同步落盘 `research/run_state.json`、`research/handoff_resume.md`、`research/data/packet_manifest.json` 三件套，状态更新为 `stage1_done`）：
+  ```text
+  python -B <Skill目录>/scripts/data_pipeline.py checkpoint --out-dir <报告目录> --stage stage1_done
+  ```
+- **单人单工作区推进与跨会话续跑**：取消为防上下文长度而强行换会话的手写接力仪式。同会话不断连时可直接进入 Stage 2（读取 [stage2-tagging.md](stage2-tagging.md)），停在唯一人工停点（Pass 1.5 受控词表签字）；需要分段或跨会话续跑时，新会话先读 `<报告目录>/research/handoff_resume.md` 并按指引加载 `references/stage2-tagging.md`。**非停点阶段严禁生成 `handoff_questions.md`**。

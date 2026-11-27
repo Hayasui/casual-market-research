@@ -73,30 +73,33 @@
 
 ## 三、标准编译、校验与脱敏命令顺序
 
-在 `<报告目录>` 全部上游 JSON 与 SVG 图表就绪后，按以下固定顺序执行 **4 条命令**（全部退出码须为 `0`）：
+在 `<报告目录>` 全部上游 JSON 与 SVG 图表就绪后，按以下固定顺序执行 **5 条命令**（全部退出码须为 `0`；`checkpoint --stage stage4_built` 会强检根目录的 `*.base64.html` 与 `*_bundle.zip`，后者由 `pack-bundle` 生成，因此第 5 条收口命令必须排在 `pack-bundle` 之后，落盘 `stage4_built` 三件套，非停点阶段不生成 `handoff_questions.md`）：
 
 ```text
 # 1. 编译模板与交付清单（检查缺项闸门、full 机会卡 6 栏或 pilot 占位屏、影视 2–3 段、年份及禁填项，预处理来源脱敏）
-python <Skill目录>/scripts/compile_report.py build \
+python -B <Skill目录>/scripts/compile_report.py build \
   --out-dir <报告目录> \
   --preset <pilot|full>
 
 # 2. 生成双版 HTML（<报告名>.html + <报告名>.base64.html + image/）
-python <Skill目录>/scripts/research_tools.py html \
+python -B <Skill目录>/scripts/research_tools.py html \
   --input <报告目录>/research/delivery-input.json \
   --output <报告目录> \
   --metadata <报告目录>/research/delivery.json \
   --script-mode <zero_js|whitelisted_inline_js>
 
 # 3. 校验双版 HTML 内容一致性、[[metric]]/[[cite]]/内部锚点与脚本白名单
-python <Skill目录>/scripts/research_tools.py validate \
+python -B <Skill目录>/scripts/research_tools.py validate \
   --input <报告目录>/research/delivery-input.json \
   --output <报告目录> \
   --script-mode <zero_js|whitelisted_inline_js>
 
 # 4. 终稿全文脱敏扫描 + 单文件体积校验（< 3 MB）+ 打分体源码包 _bundle.zip
-python <Skill目录>/scripts/compile_report.py pack-bundle \
+python -B <Skill目录>/scripts/compile_report.py pack-bundle \
   --out-dir <报告目录>
+
+# 5. 阶段收口（须排在 pack-bundle 之后，校验产物并落盘 stage4_built 三件套）
+python -B <Skill目录>/scripts/data_pipeline.py checkpoint --out-dir <报告目录> --stage stage4_built
 ```
 
 ### 脱敏扫描硬红线（第 4 步自动执行）
@@ -120,12 +123,20 @@ python <Skill目录>/scripts/compile_report.py pack-bundle \
 6. `06_films_appendix.png`。核对片名与年份格式、展开后的 2–3 段剧情及附录来源脱敏。按规则 7 核对 540px 下片名、正文和来源文字可换行，页面无横向滚动。
 7. `07_narrow_or_print.png`（窄屏，540px）。按规则 7 核对侧栏收至顶栏、页面无横向滚动，并与第 5 张的 820px 结果交叉核对。另检查打印预览可展开已交付品类与折叠内容。
 
-全部核验无误后，更新 `research/delivery.json` 中 `browser_render_verified: true` 及 `run_state.json` 为 `delivered`。
+全部核验无误后，把 `research/delivery.json` 的 `browser_render_verified` 置为 `true`；走 4.2 无截图硬降级时保持 `false`，严禁硬改 `true`。并在第五节知识库归档完成后执行终态收口：
+
+```text
+python -B <Skill目录>/scripts/data_pipeline.py checkpoint --out-dir <报告目录> --stage delivered
+```
+
+该命令按 `research/delivery.json` 的 `browser_render_verified` 如实写入 `visual_qa_passed`（缺省 `false`），落盘终态三件套（`research/run_state.json`、`research/handoff_resume.md`、`research/data/packet_manifest.json`），不生成 `handoff_questions.md`。
 
 ### 4.2 无截图硬降级声明
 若运行环境缺少可用浏览器或截图失败，**严禁宣称「完整交付通过」**，必须在交付回执首段粘贴以下固定降级声明：
 
 > **【视觉目检降级声明】** 本次报告仅完成结构与数据绑定校验（`validate == checked`、脱敏扫描零命中），未完成无头浏览器中文渲染视觉目检；宽表横向滚动、SVG 标注重叠与中文断行请在本地 Chrome/Edge 浏览器打开 `.base64.html` 后人工复核。
+
+走降级交付时 `research/delivery.json` 的 `browser_render_verified` 保持 `false`，第五节知识库归档完成后仍执行 `checkpoint --stage delivered` 终态收口（如实写入 `visual_qa_passed: false`）。
 
 ---
 
@@ -157,4 +168,4 @@ python <Skill目录>/scripts/compile_report.py pack-bundle \
 7. **看板信息层次与绑定达标**：首屏 1 屏可见 KPI 带与对应档位的机会摘要或占位屏入口；Top10 以 2 列产品卡呈现、长依据与完整数值表折进 `<details>`；`[[metric]]` 绑定 > 0，0 个未替换占位符与断链锚点。
 8. **脚本治理、脱敏与体积合规**：`research_tools.py validate` 返回 `checked`；`pilot` 含 0 个 `<script>`、`full` 内联脚本 ≤150 行且禁脚本可读；脱敏扫描 0 命中；`.base64.html` 体积 < 3.0 MB 且 `_bundle.zip` 完整。
 9. **无头浏览器中文视觉目检通过**：按 4.1 核对七张截图与 1.4 七条渲染规则，零方块字、零文字重叠裁切、零破图（无法截图时已挂硬降级声明）。
-10. **知识库归档与说明到位**：`.base64.html` 与 `_bundle.zip` 已上传 `~` 并回查存在，临时 `upload.sh` 已删除，回执首部附固定短链下载打开说明。
+10. **知识库归档与说明到位**：`.base64.html` 与 `_bundle.zip` 已上传 `~` 并回查存在，临时 `upload.sh` 已删除，回执首部附固定短链下载打开说明；终态 `checkpoint --stage delivered` 退出码 `0`。

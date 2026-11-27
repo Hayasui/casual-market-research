@@ -34,12 +34,11 @@
 2. 买量 `slogan` 出现强狗血、复仇或求生剧情，商店描述和评论均未提及剧情。
 3. 全扫已落盘截图后仍无法判断画风或玩法融合，或触发上述缺图补证。
 
-### 云端子代理双路径读图条款
+### `remote` 子代理读图核验与证据链条款
 
-拉起 `remote` 子代理执行盲检前，使用 1 张样本外截图做读图探针。探针要求复述画面中可核对的细节，以确认该执行环境具备图像通道。
-
-- **图像通道可用**。子代理在同一独立上下文中阅读文本，按 1 到 5 顺序全扫已落盘截图，先剔除封面、剧情拼贴、人物立绘与功能弹窗，再按品类首选顺位锁定判定单元，完成各轴盲态重测。
-- **图像通道不可用**。子代理只盲测主题材、融合与叙事维。另开洁净的视觉会话，只用签字版词表、样本 ID 和本地商店截图。视觉会话按 1 到 5 顺序全扫已落盘截图，先剔除封面、剧情拼贴、人物立绘与功能弹窗，再按品类首选顺位锁定判定单元，独立重测 `presentation`。原始定标和文本盲测结果都对视觉会话隐藏。主会话按 `unified_app_id` 合并两路结果至 `blind_retest_output.json`，将 `protocol_disclosure` 写为「文本与视觉分通道独立上下文重测」。
+- **首次与换版探针**。首次在本工作区运行或宿主换版本时，用 `isolation: "remote"` 子代理通过 `Read` 核验 1 张当前工作区内的本地实图（要求复述图中可核对细节以确认读图通道可用），无需每次盲测前重复抽检。
+- **日常盲测证据链**。日常盲测在同一独立上下文中全扫已落盘截图并按品类首选顺位锁定判定单元，通过逐款必填 `screenshot_index`、`visual_unit`、`primary_visual_region` 与对应四项可见特征（人物与物体比例、可见材质与光影、色彩饱和度、空间立体感）的 `evidence_quote` 守住读图证据链。
+- **通道失效硬停**。若 `remote` 子代理读图通道失效或无法读取工作区实图，直接硬停并在 `research/data/gap_register.json` 登记 `L1` 缺口，不做手工双会话拼接。
 
 ---
 
@@ -118,7 +117,11 @@
      --preset <pilot|full> \
      --draft-md <报告目录>/research/data/tag_vocab_draft.md
    ```
-3. **签字页与提问**。签字页存为 `research/data/tag_vocab_draft.md`，对话用纯文本给出草稿和样例，按 `SKILL.md` 第二节将待确认问题写入 `research/data/handoff_questions.md` 的「## 待人工拍板事项」。等用户直接用中文打字批复。
+3. **送签前收口、签字页与提问**。签字页存为 `research/data/tag_vocab_draft.md` 并通过 `validate-vocab --draft-md` 校验后，在送签前先运行阶段收口，将状态推进至 `stage2_draft_ready`（落盘 `run_state.json`、`handoff_resume.md`、`packet_manifest.json` 三件套）：
+   ```text
+   python -B <Skill目录>/scripts/data_pipeline.py checkpoint --out-dir <报告目录> --stage stage2_draft_ready
+   ```
+   随后在对话中用纯文本给出草稿和样例，按 `SKILL.md` 第二节将待确认问题写入 `research/data/handoff_questions.md` 的「## 待人工拍板事项」。等用户直接用中文打字批复。
    - **受控词表草稿**。列 `tag_id`、`一级`、`中文短词`、`轴向`、`一句话定义`、`纳入例`、`排除例`、`预计命中数（脚本派生）`、`emerging`。主题材的一级列填 `parent_domain` 对应中文名，其余轴不适用。
    - **脚本告警**。逐条原样保留脚本的每条告警，同一行含词条 ID 与告警原文。原文后紧跟中文说明，交代对应证据、已处理的动作或待确认的取舍。
    - **判定单元分布汇总**。按品类列四种 `visual_unit` 的产品数，标明 `L3` 缺半边与 `L2` 零实机图的产品。
@@ -250,7 +253,7 @@ python <Skill目录>/scripts/tag_qc.py validate-tags \
 
 ## 五、独立上下文盲态反向证伪重测与 `tag_qc.py` 三项门槛
 
-盲测子代理继承主会话模型，禁止模型覆盖。只有可核验的 `harness_model_record` 才能支撑模型名披露。缺记录时，仅披露「同模型独立上下文重测」或「文本与视觉分通道独立上下文重测」。宿主换版本后，重新实测模型继承和读图通道。
+禁止模型覆盖。只有可核验的 `harness_model_record` 才能支撑模型名披露或跨模型验证；缺记录时严禁写模型名或宣称跨模型验证，统一使用固定披露话术：`独立上下文盲态重测（未指定跨模型覆盖，运行环境不暴露子代理模型标识，不等于跨模型交叉验证）`。首次在本工作区运行或宿主换版本后，按第一节用当前工作区实图重验一次 `remote` 读图通道。
 
 1. **生成脱敏盲测输入包**（自动分层抽样并物理剥离 Pass 1、Pass 2 答案与 ST Game IQ 字段）：
    ```text
@@ -262,23 +265,23 @@ python <Skill目录>/scripts/tag_qc.py validate-tags \
      --output <报告目录>/research/data/blind_retest_input.json
    ```
    - 抽样规模：`pilot` **5 款**（1 头部强剧情 + 2 易混/脏标签 + 2 新品或低置信）；`full` **12 款**（每品类分层抽 3 款）。
-2. **拉起 `isolation: "remote"` 全新子代理**（严禁 `worktree`）。先执行第一节的读图探针并选择通道。视觉重测只用 `tag_vocab.json`、`blind_retest_input.json` 及抽样产品的本地商店截图。按 1 到 5 顺序全扫已落盘截图，先剔除封面、剧情拼贴、人物立绘与功能弹窗，再按品类首选顺位锁定判定单元。盲测独立选图，禁止读取主判序号、`pass1_free_tags.json` 或 `tags_final.json`。
+2. **拉起 `isolation: "remote"` 全新子代理**（严禁 `worktree`）。首次在本工作区或宿主换版本时先按第一节完成工作区实图读图核验；若读图通道失效直接硬停并登记 `L1` 缺口。日常盲测只用 `tag_vocab.json`、`blind_retest_input.json` 及抽样产品的本地商店截图，在同一独立上下文中按 1 到 5 顺序全扫已落盘截图，先剔除封面、剧情拼贴、人物立绘与功能弹窗，再按品类首选顺位锁定判定单元。盲测独立选图，禁止读取主判序号、`pass1_free_tags.json` 或 `tags_final.json`。
 
 ### 提示词模板 C：独立上下文盲态反向证伪重测（直接发给 `remote` 子代理）
 
 ```text
-你是独立复核编辑，正在执行盲态一致性重测。盲测子代理继承主会话模型，禁止模型覆盖。无可核验的 harness_model_record 时不写模型名，宿主换版本后须重测模型继承和读图通道。只读取以下两份文件及对应产品的本地商店截图，主判截图序号与其他历史打标文件均禁止读取。
+你是独立复核编辑，正在执行盲态一致性重测。禁止模型覆盖；无 harness_model_record 时严禁写模型名或宣称跨模型验证，统一使用固定披露话术：独立上下文盲态重测（未指定跨模型覆盖，运行环境不暴露子代理模型标识，不等于跨模型交叉验证）。首次在本工作区或宿主换版本时须按第一节重验一次 remote 读图通道。只读取以下两份文件及对应产品的本地商店截图，主判截图序号与其他历史打标文件均禁止读取。
 - 受控词表：<报告目录>/research/data/tag_vocab.json
 - 盲测原料包：<报告目录>/research/data/blind_retest_input.json
 
 对盲测原料包中的每款产品，严格采用「先证伪排除、后锁定定标」顺序：
-1. 阅读英文商店描述与评论样本。有图像通道时用 Read 独立按 1 到 5 顺序全扫已落盘截图，先剔除封面、剧情拼贴、人物立绘与功能弹窗，再按品类首选顺位锁定判定单元。presentation 按人物与物体比例、可见材质与光影、色彩饱和度、空间立体感定标。独立写入实际截图序号和观察区域。判为 promo_or_portrait_only 时，产品 confidence 必填 "low"。无图像通道时按第一节分通道重测。
+1. 阅读英文商店描述与评论样本。用 Read 独立按 1 到 5 顺序全扫已落盘截图，先剔除封面、剧情拼贴、人物立绘与功能弹窗，再按品类首选顺位锁定判定单元。presentation 按人物与物体比例、可见材质与光影、色彩饱和度、空间立体感四项可见特征定标，并独立写入 screenshot_index、visual_unit、primary_visual_region 与对应 evidence_quote。判为 promo_or_portrait_only 时，产品 confidence 必填 "low"。若读图通道失效无法读取工作区实图，直接硬停并在返回中说明，不做猜测。
 2. 先列出 2 个在词表中最容易混淆、但必须排除的近义词，并为每个排除词写出 1 句基于原文或画面的反证。
 3. 再从剩余受控词中选出 2–3 个最终 Tag（1 个 theme_primary + 1 个 presentation + 0–1 个 fusion_secondary），每词附非买量证据。融合须有独立可玩决策或副玩法循环，禁用剧情、抉择、故事、悬疑等叙事词。按第四节独立复核叙事强度、母题与证据。缺一级非买量叙事原证时，记「无剧情」并把 narrative_motif 写为 null。
 4. 将结果按如下 JSON 结构写入 <报告目录>/research/data/blind_retest_output.json：
 {
   "protocol": "blind_falsification_first_remote_retest",
-  "protocol_disclosure": "同模型独立上下文重测",
+  "protocol_disclosure": "独立上下文盲态重测（未指定跨模型覆盖，运行环境不暴露子代理模型标识，不等于跨模型交叉验证）",
   "products": [
     {
       "unified_app_id": "...",
@@ -334,4 +337,7 @@ python <Skill目录>/scripts/tag_qc.py validate-tags \
         --bundle <报告目录>/research/data/tagging_input_bundle.json \
         --output <报告目录>/research/data/tagged_corpus.json
       ```
-   - `tagged_corpus.json` 的 `qc_summary.protocol_disclosure` 沿用 `qc_report.json` 中的披露。通过终裁校验后，同步落盘 `research/run_state.json` 与 `research/data/packet_manifest.json`。状态更新为 `stage2_verified`，清单记录本阶段交接产物。
+   - `tagged_corpus.json` 的 `qc_summary.protocol_disclosure` 沿用 `qc_report.json` 中的披露。`finalize` 通过后，调用阶段收口命令（校验 Stage 2 产物并同步落盘 `research/run_state.json`、`research/handoff_resume.md`、`research/data/packet_manifest.json` 三件套，将状态更新为 `stage2_verified`；非停点阶段严禁生成 `handoff_questions.md`）：
+     ```text
+     python -B <Skill目录>/scripts/data_pipeline.py checkpoint --out-dir <报告目录> --stage stage2_verified
+     ```

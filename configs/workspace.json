@@ -2,8 +2,8 @@
   "schema_version": "1.0.0",
   "updated_date": "2026-11-26",
   "paths": {
-    "default_report_root": "/data-cfs-extra/project_data/ps-2078-4397/reports",
-    "default_project_workspace_id": "ps-2078-4397",
+    "default_report_subdir": "reports",
+    "report_root_resolution": "explicit_out_dir_else_cwd_reports",
     "readonly_paths_blacklist": [
       "/data-cfs-extra/project_data/用研市场调研助手"
     ],
@@ -22,7 +22,8 @@
       "delivery_input": "research/delivery-input.json",
       "delivery_meta": "research/delivery.json",
       "packet_manifest": "research/data/packet_manifest.json",
-      "handoff_questions": "research/data/handoff_questions.md"
+      "handoff_questions": "research/data/handoff_questions.md",
+      "handoff_resume": "research/handoff_resume.md"
     }
   },
   "runtime": {
@@ -30,7 +31,7 @@
     "subagent_isolation": "remote",
     "subagent_model_inheritance": "inherit_main",
     "forbid_subagent_model_override": true,
-    "model_inheritance_basis": "2026-11-26 当前云端宿主实测确认：母子代理运行同一模型，指定非自身模型参数既不改变执行模型也留不下可核记录；宿主换版本须重新实测。",
+    "model_inheritance_basis": "2026-11-26 三轮云端探测确认：子代理回包不暴露模型标识，未传入模型覆盖参数，无法证实跨模型独立性；宿主换版本须重新实测。",
     "forbidden_subagent_isolations": [
       "worktree"
     ],
@@ -146,7 +147,8 @@
       "按运营",
       "运营分类",
       "月报",
-      "gpt-6.2-sol"
+      "gpt-6.2-sol",
+      "deepseek-v4"
     ],
     "strip_json_keys_prefixed_with": "_internal"
   },

@@ -1355,7 +1355,7 @@ def cmd_build(args) -> int:
   <div class="vocab-grid">{''.join(vocab_cards)}</div>
   <h3>6.2 一致性重测读数与裁决记录</h3>
   <p class="scope-pill">{esc(qc_sum['protocol_disclosure'])}</p>
-  <p>当前宿主实测母子代理同模型且无可核跨模型记录，宿主换版本须重测。</p>
+  <p>{esc(blacklist_cfg['blind_retest_protocol']['model_inheritance_basis'])}</p>
   {unit_distribution_html}
   <p>抽检样本：{qc_sum['sample_evaluated']} 款 · {' · '.join(qc_readings)}。</p>
   <details class="info-fold"><summary>展开抽检逐款明细与裁决记录</summary>

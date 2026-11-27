@@ -8,10 +8,13 @@ import argparse
 import calendar
 from datetime import date, datetime, timezone
 from decimal import Decimal
+import importlib.util
+import io, os, tempfile, time, zipfile
 import json
 from pathlib import Path
 import re
 import sys
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
@@ -1726,6 +1729,360 @@ def cmd_build(args) -> int:
     return 0
 
 
+AGENT_LEVEL_CHECKS_PENDING = (
+    "mcp_st_readonly_probe", "mcp_metadata_readonly_probe", "remote_subagent_vision_probe_if_new_host",
+)
+
+_CHECKPOINT_SPECS = {
+    "stage1_done": (("research/data/market_result.json", "research/data/product_roster.json", "research/data/tagging_input_bundle.json"), "stage2_draft_ready", ["references/stage2-tagging.md"], {"vocab_signed_off": False}, "python -B scripts/tag_qc.py validate-vocab --vocab {out_dir}/research/data/tag_vocab_draft.json --preset {preset} --draft-md {out_dir}/research/data/tag_vocab_draft.md"),
+    "stage2_draft_ready": (("research/data/tag_vocab_draft.json", "research/data/tag_vocab_draft.md"), "stage2_verified", ["references/stage2-tagging.md"], {"vocab_signed_off": False}, "等待人工文字批复词表签字后落盘 tag_vocab.json，再完成 Pass 2 并跑 tag_qc.py validate-tags"),
+    "stage2_verified": (("research/data/tag_vocab.json", "research/data/tags_final.json", "research/data/qc_report.json", "research/data/tagged_corpus.json"), "stage3_done", ["references/stage3-synthesis-films.md"], {"vocab_signed_off": True, "blind_qc_passed": True}, "按 references/stage3-synthesis-films.md 生成 supply_matrix.json、opportunities.json 与 film_refs.json"),
+    "stage3_done": (("research/data/supply_matrix.json", "research/data/opportunities.json", "research/data/film_refs.json"), "stage4_built", ["references/stage4-html-delivery.md"], {}, "python -B scripts/compile_report.py build --out-dir {out_dir} --preset {preset}"),
+    "stage4_built": (("research/delivery-input.json", "research/delivery.json"), "delivered", ["references/stage4-html-delivery.md"], {}, "完成无头浏览器目检并更新 research/delivery.json 后再运行 checkpoint --stage delivered"),
+    "delivered": (("research/delivery-input.json", "research/delivery.json"), None, [], {}, "已完成交付收口（无需继续跃迁）"),
+}
+
+
+def _parse_gate_summary(raw_arg: str | None) -> dict:
+    """Parse --gate-summary from inline JSON text or a JSON file path."""
+    if raw_arg is None:
+        return {}
+    if not raw_arg.strip():
+        raise ValueError("--gate-summary cannot be empty")
+    try:
+        parsed = json.loads(raw_arg)
+    except ValueError:
+        path = Path(raw_arg)
+        if not path.is_file():
+            raise ValueError(f"--gate-summary must be valid JSON or an existing file: {raw_arg}")
+        parsed = read(path)
+    if not isinstance(parsed, dict):
+        raise ValueError("--gate-summary must resolve to a JSON object")
+    return parsed
+
+
+def _extract_open_l1_l2_gaps(out_dir: Path) -> dict[str, list[str]]:
+    """Extract unclosed L1/L2 gap IDs using compile_report.py semantics."""
+    path, result = out_dir / "research/data/gap_register.json", {"L1": [], "L2": []}
+    if not path.is_file():
+        return result
+    raw = read(path)
+    if isinstance(raw, dict) and "gaps" not in raw:
+        return result
+    gaps = raw.get("gaps") if isinstance(raw, dict) else raw
+    if not isinstance(gaps, list):
+        raise ValueError("gap_register.json must contain a list of gaps")
+    for idx, gap in enumerate(gaps, 1):
+        if not isinstance(gap, dict):
+            raise ValueError(f"gap_register.json entry #{idx} must be an object")
+        level, gid = gap.get("impact_level"), gap.get("gap_id")
+        if level not in ("L1", "L2"):
+            continue
+        if not isinstance(gid, str) or not gid.strip():
+            raise ValueError(f"gap_register.json entry #{idx} missing gap_id")
+        st = str(gap.get("status") or "").strip().lower()
+        sup = st == "superseded" and any(v.strip() if isinstance(v, str) else v for v in (gap.get(k) for k in ("superseded_by", "resolution", "reason")))
+        if st not in {"closed", "resolved", "已关闭", "已解决"} and not sup:
+            result[level].append(gid)
+    return result
+
+
+def _check_artifact(path: Path, rel: str):
+    if not path.is_file() or path.stat().st_size == 0:
+        raise ValueError(f"missing or empty required artifact: {rel}")
+    if path.suffix == ".json":
+        obj = read(path)
+        if not isinstance(obj, (dict, list)):
+            raise ValueError(f"artifact must be a JSON object or array: {rel}")
+        return obj
+    if path.suffix == ".md":
+        if not path.read_text(encoding="utf-8-sig").strip():
+            raise ValueError(f"markdown artifact is blank: {rel}")
+        return None
+    with path.open("rb") as fh:
+        if not fh.read(1):
+            raise ValueError(f"artifact is unreadable: {rel}")
+    return None
+
+
+def _validate_stage_artifacts(out_dir: Path, stage: str) -> tuple[dict, dict | None]:
+    """Validate required stage artifacts before writing any checkpoint output."""
+    loaded_map = {rel: _check_artifact(out_dir / rel, rel) for rel in _CHECKPOINT_SPECS[stage][0]}
+    delivery_obj = loaded_map.get("research/delivery.json", {})
+    if "research/delivery.json" in loaded_map and not isinstance(delivery_obj, dict):
+        raise ValueError("research/delivery.json must be a JSON object")
+    corpus_obj = loaded_map.get("research/data/tagged_corpus.json")
+    if "research/data/tagged_corpus.json" in loaded_map and not isinstance(corpus_obj, dict):
+        raise ValueError("research/data/tagged_corpus.json must be a JSON object")
+    if stage == "stage2_verified":
+        qc = (corpus_obj or {}).get("qc_summary")
+        if not corpus_obj or corpus_obj.get("status") != "verified" or not isinstance(qc, dict) or qc.get("passed") is not True:
+            raise ValueError("tagged_corpus.json must have status='verified' and qc_summary.passed=true")
+    if stage in {"stage4_built", "delivered"}:
+        b64 = [p for p in out_dir.iterdir() if p.is_file() and p.name.endswith(".base64.html")]
+        zips = [p for p in out_dir.iterdir() if p.is_file() and p.name.endswith("_bundle.zip")]
+        if not b64 or not zips:
+            raise ValueError("missing root deliverable (*.base64.html and *_bundle.zip required)")
+        for path in (*b64, *zips):
+            _check_artifact(path, path.name)
+    if corpus_obj is None and (out_dir / "research/data/tagged_corpus.json").is_file():
+        try:
+            loaded = read(out_dir / "research/data/tagged_corpus.json")
+            corpus_obj = loaded if isinstance(loaded, dict) else None
+        except (OSError, ValueError):
+            corpus_obj = None
+    return delivery_obj, corpus_obj
+
+
+def _scan_manifest_paths(out_dir: Path) -> list[tuple[Path, str, str]]:
+    """Collect research/ files (excluding manifest itself, *.tmp, __pycache__) and root deliverables."""
+    items, research_dir = [], out_dir / "research"
+    if research_dir.is_dir():
+        for path in research_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(out_dir).as_posix()
+            segs = rel.split("/")
+            if rel == "research/data/packet_manifest.json" or "__pycache__" in segs or any(s.endswith(".tmp") for s in segs):
+                continue
+            cat = "state" if rel in {"research/run_state.json", "research/handoff_resume.md", "research/brief.md"} else (
+                segs[1] if len(segs) >= 3 and segs[1] in {"raw", "data", "charts", "media", "screenshots"} else "data"
+            )
+            items.append((path, rel, cat))
+    items.extend((p, p.name, "deliverable") for p in out_dir.iterdir() if p.is_file() and p.name.endswith((".html", "_bundle.zip")))
+    items.sort(key=lambda item: item[1])
+    return items
+
+
+def _render_handoff_resume(out_dir: Path, state: dict, file_count: int, corpus_obj: dict | None) -> str:
+    """Render concise <=40-line GFM resume card without button syntax."""
+    one = lambda v: " ".join(str(v or "").splitlines()).strip()
+    stage, win, nr = state["current_stage"], state.get("window") or {}, state.get("new_release_window") or {}
+    gaps = state.get("open_l1_l2_gaps") or {"L1": [], "L2": []}
+    qc = (corpus_obj or {}).get("qc_summary") if isinstance(corpus_obj, dict) else None
+    qc_note = f"passed={qc.get('passed')}, 主题材={qc.get('theme_primary_agreement')}, 呈现={qc.get('presentation_agreement')}, Jaccard={qc.get('mean_tag_set_overlap')}" if isinstance(qc, dict) else "未运行或无摘要"
+    blockers = [f"{k}={','.join(gaps[k])}" for k in ("L1", "L2") if gaps.get(k)]
+    if stage == "stage2_draft_ready":
+        blockers.append("待人工文字批复受控词表签字（唯一人工停点）")
+    if stage == "delivered" and not state.get("visual_qa_passed"):
+        blockers.append("browser_render_verified=false（未完成浏览器视觉目检）")
+    next_cmd = _CHECKPOINT_SPECS[stage][4].format(out_dir=one(out_dir), preset=one(state.get("preset") or "pilot"))
+    refs = ", ".join(state.get("next_mandatory_references") or []) or "无"
+    lines = [
+        "# 续跑状态卡（只读）", "",
+        f"## 1. 报告位置与当前阶段\n- 报告目录：`{one(out_dir)}`\n- 预设与阶段：`{one(state.get('preset'))}` / `{one(stage)}` | 最近校验（UTC）：`{one(state.get('last_verified_at'))}`", "",
+        f"## 2. 已锁定窗口与门禁状态\n- 市场窗口：`{one(win.get('start'))}` ~ `{one(win.get('end'))}`（共 {len(state.get('months') or [])} 个月） | 新品滚动窗：`{one(nr.get('start'))}` ~ `{one(nr.get('end'))}`\n- 门禁：`vocab_signed_off={state.get('vocab_signed_off')}`，`blind_qc_passed={state.get('blind_qc_passed')}`，`visual_qa_passed={state.get('visual_qa_passed')}`\n- 盲测一致率摘要：{qc_note}", "",
+        f"## 3. 产物清单指针\n- 产物清单：`research/data/packet_manifest.json`（预计追踪 {file_count} 项文件，完整路径与 SHA-256 见清单）", "",
+        f"## 4. 下一阶段与建议命令\n- 下一阶段：`{state.get('next_stage')}` | 必读参考：`{refs}`\n- 建议首条命令：`{next_cmd}`", "",
+        f"## 5. 禁重跑步骤与当前阻塞项\n- 已完成步骤（禁重跑）：`{', '.join(state.get('completed_steps') or [])}`\n- 当前阻塞项：{'；'.join(blockers) if blockers else '无'}",
+    ]
+    return "\n".join("\n".join(lines).splitlines()[:40]) + "\n"
+
+
+def cmd_checkpoint(args) -> int:
+    """Validate stage outputs and write run_state.json, handoff_resume.md, and packet_manifest.json in order."""
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if not str(args.out_dir or "").strip():
+        raise ValueError("--out-dir cannot be empty")
+    workspace_cfg, _, _ = load_configs()
+    out_dir = validate_out_dir(Path(args.out_dir), workspace_cfg)
+    state_path = out_dir / "research/run_state.json"
+    if not state_path.is_file():
+        raise ValueError(f"missing run_state.json (run init-run first): {state_path}")
+    run_state = read(state_path)
+    if not isinstance(run_state, dict):
+        raise ValueError("research/run_state.json must be a JSON object")
+
+    stage, gate_results = args.stage, _parse_gate_summary(args.gate_summary)
+    delivery_obj, corpus_obj = _validate_stage_artifacts(out_dir, stage)
+    open_gaps = _extract_open_l1_l2_gaps(out_dir)
+    _, next_stage, refs, flags, _ = _CHECKPOINT_SPECS[stage]
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    completed = list(dict.fromkeys(s for s in (run_state.get("completed_steps") or []) if isinstance(s, str) and s))
+    if stage not in completed:
+        completed.append(stage)
+    new_state = {**run_state, "current_stage": stage, "completed_steps": completed, "next_stage": next_stage,
+                 "next_mandatory_references": list(refs), "open_l1_l2_gaps": open_gaps,
+                 "last_verified_at": now_utc, "updated_at": now_utc, **flags}
+    if stage == "delivered":
+        new_state["visual_qa_passed"] = bool(delivery_obj.get("browser_render_verified", False))
+
+    # 1 -> 2 -> 3 write order so packet_manifest.json hashes the final state and resume card.
+    write(state_path, new_state)
+    predicted = len({rel for _, rel, _ in _scan_manifest_paths(out_dir)} | {"research/run_state.json", "research/handoff_resume.md"})
+    resume_text = _render_handoff_resume(out_dir, new_state, predicted, corpus_obj)
+    resume_path = out_dir / "research/handoff_resume.md"
+    resume_tmp = resume_path.with_name(resume_path.name + ".tmp")
+    resume_tmp.write_text(resume_text, encoding="utf-8")
+    resume_tmp.replace(resume_path)
+
+    files = [{"rel_path": rel, "bytes": p.stat().st_size, "sha256": digest(p.read_bytes()), "category": cat} for p, rel, cat in _scan_manifest_paths(out_dir)]
+    manifest_path = out_dir / "research/data/packet_manifest.json"
+    write(manifest_path, {"schema_version": "1.0.0", "generated_at": now_utc, "stage": stage, "preset": new_state.get("preset"), "file_count": len(files), "files": files, "gate_results": gate_results})
+    print(json.dumps({"status": "checkpointed", "stage": stage, "run_state": str(state_path), "packet_manifest": str(manifest_path),
+                      "handoff_resume": str(resume_path), "file_count": len(files), "resume_lines": len(resume_text.splitlines()), "open_l1_l2_gaps": open_gaps}, ensure_ascii=False))
+    return 0
+
+
+def _read_skill_versions(errors: list[str]) -> tuple[str | None, str | None]:
+    """Parse SKILL.md version and optional .skill-version."""
+    skill_ver = platform_ver = None
+    try:
+        m = re.search(r"当前版本：\s*(v?\d+(?:\.\d+){1,3})", (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8-sig", errors="replace"))
+        skill_ver = m.group(1) if m else None
+        if not skill_ver:
+            errors.append("SKILL.md missing '当前版本：'")
+    except OSError as exc:
+        errors.append(f"failed to read SKILL.md: {exc}")
+    sv_path = SKILL_ROOT / ".skill-version"
+    if sv_path.is_file():
+        try:
+            lines = sv_path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+            platform_ver = (lines[0].strip() or None) if lines else None
+        except OSError as exc:
+            errors.append(f"failed to read .skill-version: {exc}")
+    return skill_ver, platform_ver
+
+
+def _audit_package(errors: list[str], warnings: list[str]) -> tuple[dict, dict]:
+    """Audit skill source files, configs, bytecode presence and entry imports."""
+    ignored, source_count, pycache_present = [], 0, False
+    for path in sorted(SKILL_ROOT.rglob("*")):
+        rel = path.relative_to(SKILL_ROOT)
+        if path.is_dir():
+            pycache_present |= path.name == "__pycache__"
+        elif path.is_file():
+            is_bc = "__pycache__" in rel.parts or path.suffix == ".pyc"
+            if is_bc or path.name == ".skill-version":
+                pycache_present |= is_bc
+                ignored.append(rel.as_posix())
+            else:
+                source_count += 1
+    if source_count != 25:
+        errors.append(f"expected 25 source files, found {source_count}")
+    if pycache_present:
+        warnings.append("__pycache__ or .pyc present in skill directory")
+    configs_valid, workspace_cfg = True, {}
+    for name in ("workspace.json", "subgenres.json", "tag_blacklist.json"):
+        try:
+            obj = read(SKILL_ROOT / "configs" / name)
+            if not isinstance(obj, (dict, list)) or not obj:
+                raise ValueError("empty or invalid JSON root")
+            if name == "workspace.json" and isinstance(obj, dict):
+                workspace_cfg = obj
+        except (OSError, ValueError) as exc:
+            configs_valid = False
+            errors.append(f"invalid config configs/{name}: {exc}")
+    entry_imports_ok, prev_bc = True, sys.dont_write_bytecode
+    sys.dont_write_bytecode = True
+    try:
+        importlib.invalidate_caches()
+        for mod_name in ("data_pipeline", "tag_qc", "compile_report", "research_tools"):
+            try:
+                mod = importlib.import_module(mod_name)
+                mod_file = getattr(mod, "__file__", None)
+                if not mod_file or Path(mod_file).resolve().parent != SCRIPT_DIR.resolve():
+                    raise ImportError(f"{mod_name} resolved outside {SCRIPT_DIR}")
+            except Exception as exc:
+                entry_imports_ok = False
+                errors.append(f"entry import failed ({mod_name}): {exc}")
+    finally:
+        sys.dont_write_bytecode = prev_bc
+    return {"source_file_count": source_count, "ignored_files": ignored, "pycache_present": pycache_present,
+            "configs_valid": configs_valid, "entry_imports_ok": entry_imports_ok}, workspace_cfg
+
+
+def _check_out_dir(raw_arg: str | None, workspace_cfg: dict, write_probe: bool, errors: list[str]) -> dict:
+    """Validate out_dir boundary and check writability without creating directories."""
+    source = "explicit" if raw_arg is not None else "derived_cwd"
+    res = {"target_path": raw_arg or "", "source": source, "valid_boundary": False, "writable": False, "write_probe_ran": False}
+    if raw_arg is not None and not raw_arg.strip():
+        errors.append("--out-dir cannot be empty")
+        return res
+    subdir = (workspace_cfg.get("paths") or {}).get("default_report_subdir") or "reports"
+    raw_out = Path(raw_arg) if raw_arg is not None else Path.cwd() / subdir
+    res["target_path"] = str(raw_out)
+    try:
+        resolved = validate_out_dir(raw_out, workspace_cfg)
+    except (OSError, ValueError) as exc:
+        errors.append(str(exc))
+        return res
+    res["target_path"], res["valid_boundary"] = str(resolved), True
+    probe_dir = next((p for p in (resolved, *resolved.parents) if p.exists()), None)
+    if probe_dir is None or not probe_dir.is_dir():
+        errors.append(f"no writable existing directory for: {resolved}")
+        return res
+    if not write_probe:
+        res["writable"] = os.access(probe_dir, os.W_OK | os.X_OK)
+        if not res["writable"]:
+            errors.append(f"output directory not writable: {probe_dir}")
+        return res
+    res["write_probe_ran"], probe_path = True, None
+    try:
+        with tempfile.NamedTemporaryFile(mode="wb", prefix=".doctor_probe_", suffix=".tmp", dir=probe_dir, delete=False) as fh:
+            probe_path = Path(fh.name)
+            fh.write(b"doctor_probe_ok")
+        if probe_path.read_bytes() != b"doctor_probe_ok":
+            raise OSError("write probe readback mismatch")
+        res["writable"] = True
+    except OSError as exc:
+        errors.append(f"write probe failed in {probe_dir}: {exc}")
+    finally:
+        try:
+            if probe_path is not None:
+                probe_path.unlink(missing_ok=True)
+        except OSError as exc:
+            res["writable"] = False
+            errors.append(f"write probe cleanup failed ({probe_path}): {exc}")
+    return res
+
+
+def _probe_network(warnings: list[str], url: str = "https://www.apple.com/robots.txt", timeout: float = 5.0) -> dict:
+    """Probe lightweight public HTTP reachability when --check-network is requested."""
+    started = time.monotonic()
+    try:
+        with urlopen(Request(url, method="HEAD", headers={"User-Agent": "casual-tag-market-research/1.0"}), timeout=timeout) as resp:
+            code = getattr(resp, "status", None) or resp.getcode()
+            ok = isinstance(code, int) and 200 <= code < 400
+    except HTTPError as exc:
+        code, ok = exc.code, False
+    except (URLError, OSError, ValueError):
+        code, ok = None, False
+    if not ok:
+        warnings.append(f"network reachability probe failed: status_code={code}")
+    return {"ok": ok, "status_code": code, "elapsed_sec": round(time.monotonic() - started, 3)}
+
+
+def cmd_doctor(args) -> int:
+    """Run pure local deterministic self-check for environment, package and out-dir boundary."""
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    errors, warnings = [], []
+    skill_ver, platform_ver = _read_skill_versions(errors)
+    try:
+        with zipfile.ZipFile(io.BytesIO(), "w") as zf:
+            zf.writestr("probe.txt", b"ok")
+        stdlib_zipfile_ok = True
+    except Exception as exc:
+        stdlib_zipfile_ok = False
+        errors.append(f"stdlib zipfile check failed: {exc}")
+    package_audit, workspace_cfg = _audit_package(errors, warnings)
+    out_dir_check = _check_out_dir(args.out_dir, workspace_cfg, args.write_probe, errors)
+    network_check = _probe_network(warnings) if args.check_network else None
+    payload = {
+        "status": "failed" if errors else ("warn" if warnings else "ok"),
+        "skill_root": str(SKILL_ROOT), "skill_version": skill_ver, "platform_skill_version": platform_ver,
+        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+        "stdlib_zipfile_ok": stdlib_zipfile_ok, "pil_available": importlib.util.find_spec("PIL") is not None,
+        "package_audit": package_audit, "out_dir_check": out_dir_check,
+        "network_check": network_check,
+        "agent_level_checks_pending": list(AGENT_LEVEL_CHECKS_PENDING), "errors": errors, "warnings": warnings,
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+    return 2 if errors else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Stage 1 ST/metadata pipeline for casual-tag-market-research")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1758,6 +2115,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_build.add_argument("--union-audit", help="Optional offline new-release union audit JSON")
     p_build.add_argument("--skip-media-download", action="store_true", help="Skip HTTP icon/screenshot download (use existing local files)")
     p_build.set_defaults(func=cmd_build)
+
+    p_doctor = sub.add_parser("doctor", help="Run local deterministic self-check for environment, package and out-dir boundary")
+    p_doctor.add_argument("--out-dir", default=None, help="Explicit output directory outside skill dir")
+    p_doctor.add_argument("--write-probe", action="store_true", help="Run write/read/delete temp probe in out dir or nearest ancestor")
+    p_doctor.add_argument("--check-network", action="store_true", help="Run lightweight public HTTP reachability check")
+    p_doctor.set_defaults(func=cmd_doctor)
+
+    p_ckpt = sub.add_parser("checkpoint", help="Verify stage outputs and write run_state, handoff_resume, and packet_manifest")
+    p_ckpt.add_argument("--out-dir", required=True, help="Initialized report output directory outside skill dir")
+    p_ckpt.add_argument("--stage", required=True, choices=tuple(_CHECKPOINT_SPECS), help="Completed stage to checkpoint")
+    p_ckpt.add_argument("--gate-summary", default=None, help="Optional gate summary JSON string or file path")
+    p_ckpt.set_defaults(func=cmd_checkpoint)
     return parser
 
 

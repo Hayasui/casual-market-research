@@ -394,18 +394,16 @@
     }
   },
   "blind_retest_protocol": {
-    "disclosure_label": "同模型独立上下文重测（度量词表歧义与输出稳定性，不等于跨模型交叉验证）",
+    "disclosure_label": "独立上下文盲态重测（未指定跨模型覆盖，运行环境不暴露子代理模型标识，不等于跨模型交叉验证）",
     "subagent_isolation": "remote",
     "subagent_model": "inherit_main",
     "forbid_model_override": true,
     "forbid_unverified_model_names_in_disclosure": true,
     "allowed_disclosures": [
-      "同模型独立上下文重测",
-      "同模型独立上下文重测（度量词表歧义与输出稳定性，不等于跨模型交叉验证）",
-      "文本与视觉分通道独立上下文重测"
+      "独立上下文盲态重测（未指定跨模型覆盖，运行环境不暴露子代理模型标识，不等于跨模型交叉验证）"
     ],
     "unverified_model_name_patterns": ["sonnet", "opus", "haiku", "claude", "gpt-", "gemini", "deepseek", "qwen"],
-    "model_inheritance_basis": "2026-11-26 当前云端宿主实测确认：母子代理运行同一模型，指定非自身模型参数既不改变执行模型也留不下可核记录；宿主换版本须重新实测。",
+    "model_inheritance_basis": "2026-11-26 三轮云端探测确认：子代理回包不暴露模型标识，未传入模型覆盖参数，无法证实跨模型独立性；宿主换版本须重新实测。",
     "strip_input_fields": [
       "pass1_free_tags",
       "pass2_final_tags",

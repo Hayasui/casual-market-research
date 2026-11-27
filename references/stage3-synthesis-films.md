@@ -157,4 +157,10 @@
 
 ## 四、Stage 3 完成检查
 
-三份 JSON 落盘后更新 `research/run_state.json` 为 `stage3_done`，无需人工停顿，直接进入 Stage 4 编译、校验与浏览器视觉目检。
+三份 JSON 落盘后执行确定性阶段收口命令（校验 `supply_matrix.json`、`opportunities.json`、`film_refs.json` 三份产物，落盘 `research/run_state.json`、`research/handoff_resume.md`、`research/data/packet_manifest.json` 三件套并将状态更新为 `stage3_done`；非停点阶段严禁生成 `handoff_questions.md`）：
+
+```text
+python -B <Skill目录>/scripts/data_pipeline.py checkpoint --out-dir <报告目录> --stage stage3_done
+```
+
+无需人工停顿，同会话可直接进入 Stage 4 编译、校验与浏览器视觉目检；单人跨会话续跑先读 `research/handoff_resume.md`。
