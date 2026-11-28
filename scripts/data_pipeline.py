@@ -8,6 +8,7 @@ import argparse
 import calendar
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from html.parser import HTMLParser
 import importlib.util
 import io, os, tempfile, time, zipfile
 import json
@@ -17,6 +18,8 @@ import sys
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
+
+sys.dont_write_bytecode = True
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_ROOT = SCRIPT_DIR.parent
@@ -290,6 +293,7 @@ def cmd_init_run(args) -> int:
         "enabled_subgenres": list(preset_cfg["enabled_subgenres"]),
         "market_overview_reference_subgenres": list(preset_cfg["market_overview_reference_subgenres"]),
         "html_script_mode": preset_cfg["html_script_mode"],
+        "enable_film_refs": bool(preset_cfg.get("enable_film_refs", False)),
         "current_stage": "initialized",
         "vocab_signed_off": False,
         "blind_qc_passed": False,
@@ -407,6 +411,14 @@ def _validate_yilan_app_info(raw_obj) -> tuple[bool, dict]:
     if app_id is None or str(app_id).strip() in {"", "null", "None", "暂无"}:
         return False, data
     return True, data
+
+
+def _first_publisher_name(row: dict, *fields: str) -> str:
+    for field in fields:
+        name = row.get(field)
+        if isinstance(name, str) and name.strip() not in {"", "未提供"}:
+            return name
+    return ""
 
 
 def _filter_reviews(raw_obj, max_reviews: int = 30) -> list[dict]:
@@ -957,7 +969,7 @@ def cmd_build(args) -> int:
                 "unified_app_id": uid,
                 "entity_id": sanitize_id_slug(uid, "app"),
                 "app_name": row.get("unified_app_name") or row.get("app_name") or uid,
-                "publisher_name": row.get("unified_publisher_name") or row.get("publisher_name") or "未提供",
+                "publisher_name": "",
                 "primary_subgenre": sg_id,
                 "subgenre_memberships": [],
                 "roles": [],
@@ -984,6 +996,10 @@ def cmd_build(args) -> int:
                 "yilan_fake_zero_detected": False,
             }
             roster_by_uid[uid] = existing
+        if not existing["publisher_name"]:
+            existing["publisher_name"] = _first_publisher_name(
+                row, "unified_publisher_name", "publisher_name",
+            )
         if sg_id not in existing["subgenre_memberships"]:
             existing["subgenre_memberships"].append(sg_id)
         if role not in existing["roles"]:
@@ -1362,6 +1378,11 @@ def cmd_build(args) -> int:
             matched_meta_count += 1
             break
 
+        if not prod["publisher_name"]:
+            prod["publisher_name"] = _first_publisher_name(
+                info_data, "publisher", "company", "developer", "publisher_name",
+            )
+
         publisher_start = prod["publisher_start"]
         effective_launch_date = prod["effective_launch_date"]
         reconciliation_reason = None
@@ -1735,9 +1756,29 @@ AGENT_LEVEL_CHECKS_PENDING = (
 
 _CHECKPOINT_SPECS = {
     "stage1_done": (("research/data/market_result.json", "research/data/product_roster.json", "research/data/tagging_input_bundle.json"), "stage2_draft_ready", ["references/stage2-tagging.md"], {"vocab_signed_off": False}, "python -B scripts/tag_qc.py validate-vocab --vocab {out_dir}/research/data/tag_vocab_draft.json --preset {preset} --draft-md {out_dir}/research/data/tag_vocab_draft.md"),
-    "stage2_draft_ready": (("research/data/tag_vocab_draft.json", "research/data/tag_vocab_draft.md"), "stage2_verified", ["references/stage2-tagging.md"], {"vocab_signed_off": False}, "等待人工文字批复词表签字后落盘 tag_vocab.json，再完成 Pass 2 并跑 tag_qc.py validate-tags"),
+    "stage2_draft_ready": (
+        (
+            "research/data/tag_vocab_draft.json",
+            "research/data/tag_vocab_draft.md",
+            "research/data/handoff_questions.md",
+            "tag_vocab_signoff.html",
+        ),
+        "stage2_verified",
+        ["references/stage2-tagging.md"],
+        {"vocab_signed_off": False},
+        "等待人工文字批复词表签字后落盘 tag_vocab.json，再完成 Pass 2 并跑 tag_qc.py validate-tags",
+    ),
     "stage2_verified": (("research/data/tag_vocab.json", "research/data/tags_final.json", "research/data/qc_report.json", "research/data/tagged_corpus.json"), "stage3_done", ["references/stage3-synthesis-films.md"], {"vocab_signed_off": True, "blind_qc_passed": True}, "按 references/stage3-synthesis-films.md 生成 supply_matrix.json、opportunities.json 与 film_refs.json"),
-    "stage3_done": (("research/data/supply_matrix.json", "research/data/opportunities.json", "research/data/film_refs.json"), "stage4_built", ["references/stage4-html-delivery.md"], {}, "python -B scripts/compile_report.py build --out-dir {out_dir} --preset {preset}"),
+    "stage3_done": (
+        (
+            "research/data/supply_matrix.json",
+            "research/data/opportunities.json",
+        ),
+        "stage4_built",
+        ["references/stage4-html-delivery.md"],
+        {},
+        "python -B scripts/compile_report.py build --out-dir {out_dir} --preset {preset}",
+    ),
     "stage4_built": (("research/delivery-input.json", "research/delivery.json"), "delivered", ["references/stage4-html-delivery.md"], {}, "完成无头浏览器目检并更新 research/delivery.json 后再运行 checkpoint --stage delivered"),
     "delivered": (("research/delivery-input.json", "research/delivery.json"), None, [], {}, "已完成交付收口（无需继续跃迁）"),
 }
@@ -1805,9 +1846,79 @@ def _check_artifact(path: Path, rel: str):
     return None
 
 
-def _validate_stage_artifacts(out_dir: Path, stage: str) -> tuple[dict, dict | None]:
+_SIGNOFF_HASH_INPUTS = {
+    "draft_vocab_sha256": "research/data/tag_vocab_draft.json",
+    "roster_sha256": "research/data/product_roster.json",
+    "pass1_sha256": "research/data/pass1_free_tags.json",
+}
+
+
+class _SignoffMetaParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.hashes: dict[str, list[str | None]] = {}
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "meta":
+            return
+        attributes = dict(attrs)
+        name = attributes.get("name")
+        if name in _SIGNOFF_HASH_INPUTS:
+            self.hashes.setdefault(name, []).append(attributes.get("content"))
+
+
+def _validate_draft_signoff(out_dir: Path, draft: dict | list) -> None:
+    questions_path = out_dir / "research/data/handoff_questions.md"
+    questions = questions_path.read_text(encoding="utf-8-sig")
+    heading = re.search(
+        r"^ {0,3}##[ \t]+待人工拍板事项(?:[ \t]+#+)?[ \t]*$",
+        questions,
+        re.MULTILINE,
+    )
+    section_body = ""
+    if heading:
+        section_body = re.split(
+            r"^ {0,3}#{1,2}(?:[ \t]|$)",
+            questions[heading.end():],
+            maxsplit=1,
+            flags=re.MULTILINE,
+        )[0]
+    if not re.search(r"^[ \t]*(?![ \t]|#+(?:[ \t]|$))\S", section_body, re.MULTILINE):
+        raise ValueError(
+            "handoff_questions.md requires a nonempty ## 待人工拍板事项 section"
+        )
+
+    receipt = draft.get("script_gate_receipt") if isinstance(draft, dict) else None
+    if not isinstance(receipt, dict) or not receipt:
+        raise ValueError("tag_vocab_draft.json requires a nonempty script_gate_receipt object")
+
+    signoff_page = out_dir / "tag_vocab_signoff.html"
+    meta = _SignoffMetaParser()
+    meta.feed(signoff_page.read_text(encoding="utf-8-sig"))
+    meta.close()
+    for name, relative_path in _SIGNOFF_HASH_INPUTS.items():
+        expected_hash = digest((out_dir / relative_path).read_bytes())
+        if meta.hashes.get(name) != [expected_hash]:
+            raise ValueError(f"tag_vocab_signoff.html {name} does not match {relative_path}")
+
+
+def _validate_stage_artifacts(
+    out_dir: Path, stage: str, run_state: dict, presets: dict,
+) -> tuple[dict, dict | None]:
     """Validate required stage artifacts before writing any checkpoint output."""
-    loaded_map = {rel: _check_artifact(out_dir / rel, rel) for rel in _CHECKPOINT_SPECS[stage][0]}
+    required_paths = _CHECKPOINT_SPECS[stage][0]
+    if stage == "stage3_done":
+        if "enable_film_refs" in run_state:
+            enable_film_refs = run_state["enable_film_refs"]
+        else:
+            enable_film_refs = presets[run_state["preset"]].get("enable_film_refs", False)
+        if enable_film_refs:
+            required_paths += ("research/data/film_refs.json",)
+
+    loaded_map = {rel: _check_artifact(out_dir / rel, rel) for rel in required_paths}
+    if stage == "stage2_draft_ready":
+        _validate_draft_signoff(out_dir, loaded_map["research/data/tag_vocab_draft.json"])
+
     delivery_obj = loaded_map.get("research/delivery.json", {})
     if "research/delivery.json" in loaded_map and not isinstance(delivery_obj, dict):
         raise ValueError("research/delivery.json must be a JSON object")
@@ -1885,7 +1996,7 @@ def cmd_checkpoint(args) -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if not str(args.out_dir or "").strip():
         raise ValueError("--out-dir cannot be empty")
-    workspace_cfg, _, _ = load_configs()
+    workspace_cfg, subgenres_cfg, _ = load_configs()
     out_dir = validate_out_dir(Path(args.out_dir), workspace_cfg)
     state_path = out_dir / "research/run_state.json"
     if not state_path.is_file():
@@ -1895,7 +2006,9 @@ def cmd_checkpoint(args) -> int:
         raise ValueError("research/run_state.json must be a JSON object")
 
     stage, gate_results = args.stage, _parse_gate_summary(args.gate_summary)
-    delivery_obj, corpus_obj = _validate_stage_artifacts(out_dir, stage)
+    delivery_obj, corpus_obj = _validate_stage_artifacts(
+        out_dir, stage, run_state, subgenres_cfg["presets"],
+    )
     open_gaps = _extract_open_l1_l2_gaps(out_dir)
     _, next_stage, refs, flags, _ = _CHECKPOINT_SPECS[stage]
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

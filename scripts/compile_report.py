@@ -16,6 +16,8 @@ import sys
 from urllib.parse import urlsplit
 import zipfile
 
+sys.dont_write_bytecode = True
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_ROOT = SCRIPT_DIR.parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -23,35 +25,99 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from common import ident, read, write
 
-APPROVED_INLINE_JS = """(function(){
-  document.documentElement.classList.add('js-enabled');
-  var activeTag = '';
+GAMEPLAY_MARKET_SCOPE = "玩法大盘为合成、三消、模拟经营三类之和。混变益智取产品模型与益智品类的交集，单列展示，不计入该合计。"
+
+APPROVED_INLINE_JS = """document.documentElement.classList.add('js-enabled');
+(function(){
+  const byId = id => document.getElementById(id);
+  const cards = document.querySelectorAll('.product-card[data-tags], .new-app-card[data-tags]');
+  const buttons = document.querySelectorAll('.js-tag-filter');
+  const results = byId('js-filter-results');
+  const status = byId('js-filter-status');
+  const hitsOnly = byId('js-filter-only');
+  const panels = document.querySelectorAll('.tab-panel');
+  const charts = document.querySelectorAll('#sec-subgenres .chart-box');
+
+  function updateVisibility(){
+    const hide = hitsOnly.checked;
+    if(hide) byId('tab-radio-all').checked = true;
+    for(const card of cards){
+      card.classList.toggle('is-filter-hidden', hide && !card.classList.contains('is-filtered-hit'));
+    }
+    for(const panel of panels){
+      panel.classList.toggle('is-filter-hidden', hide && !panel.querySelector('.is-filtered-hit'));
+    }
+    for(const chart of charts) chart.classList.toggle('is-filter-hidden', hide);
+  }
+
   function applyTagFilter(tagId){
-    activeTag = (activeTag === tagId) ? '' : tagId;
-    var cards = document.querySelectorAll('.product-card[data-tags]');
-    var shown = 0;
-    for(var i=0;i<cards.length;i++){
-      var list = (cards[i].getAttribute('data-tags') || '').split(',');
-      var match = !activeTag || list.indexOf(activeTag) !== -1;
-      cards[i].classList.toggle('is-filtered-out', !match);
-      cards[i].classList.toggle('is-filtered-hit', !!activeTag && match);
-      if(match){ shown++; }
+    const matches = new Map();
+    for(const card of cards){
+      const hit = Boolean(tagId) && card.dataset.tags.split(',').includes(tagId);
+      card.classList.toggle('is-filtered-hit', hit);
+      if(hit && (!matches.has(card.dataset.uid) || card.classList.contains('product-card'))){
+        matches.set(card.dataset.uid, card);
+      }
     }
-    var btns = document.querySelectorAll('.js-tag-filter');
-    for(var j=0;j<btns.length;j++){
-      btns[j].classList.toggle('is-active', btns[j].getAttribute('data-tag-id') === activeTag);
+    for(const button of buttons){
+      const active = button.dataset.tagId === tagId;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-pressed', String(active));
     }
-    var st = document.getElementById('js-filter-status');
-    if(st){
-      st.textContent = activeTag ? ('已按标签筛选命中 ' + shown + ' 款产品（再次点击清除）') : '全部产品可见';
+    const groups = new Map();
+    for(const card of matches.values()){
+      const {subgenre, appName, revLabel} = card.dataset;
+      if(!groups.has(subgenre)){
+        const group = document.createElement('div');
+        group.className = 'filter-chip-group';
+        const heading = document.createElement('strong');
+        heading.textContent = document.querySelector('.tab-bar label[for="tab-radio-' + subgenre + '"]').textContent;
+        group.appendChild(heading);
+        groups.set(subgenre, group);
+      }
+      const chip = document.createElement('a');
+      chip.className = 'filter-chip';
+      chip.href = '#' + card.id;
+      chip.textContent = appName + ' · ' + revLabel;
+      groups.get(subgenre).appendChild(chip);
+    }
+    results.replaceChildren(...groups.values());
+    status.textContent = tagId ? '已按标签筛选命中 ' + matches.size + ' 款产品' : '全部产品可见';
+    hitsOnly.disabled = !tagId;
+    updateVisibility();
+  }
+
+  for(const button of buttons){
+    button.addEventListener('click', () => applyTagFilter(button.dataset.tagId));
+  }
+  byId('js-filter-clear').addEventListener('click', () => {
+    hitsOnly.checked = false;
+    applyTagFilter('');
+  });
+  hitsOnly.addEventListener('change', updateVisibility);
+
+  function revealAnchor(hash){
+    if(hash.startsWith('#src-')){
+      const sources = byId('sources-fold');
+      if(sources) sources.open = true;
+    } else if(hash.startsWith('#prod-') || hash.startsWith('#new-')){
+      const target = byId(hash.slice(1));
+      if(hitsOnly.checked && target?.classList.contains('is-filter-hidden')){
+        hitsOnly.checked = false;
+        updateVisibility();
+      }
+      const panel = target?.closest('.tab-panel');
+      if(panel) byId('tab-radio-' + panel.id.slice(6)).checked = true;
     }
   }
-  var fbtns = document.querySelectorAll('.js-tag-filter');
-  for(var i=0;i<fbtns.length;i++){
-    fbtns[i].addEventListener('click', function(){ applyTagFilter(this.getAttribute('data-tag-id')); });
-  }
-  var clearBtn = document.getElementById('js-filter-clear');
-  if(clearBtn){ clearBtn.addEventListener('click', function(){ applyTagFilter(''); }); }
+  document.addEventListener('click', event => {
+    const link = event.target.closest('a[href^="#"]');
+    if(link && !event.defaultPrevented && event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey){
+      revealAnchor(link.hash);
+    }
+  });
+  window.addEventListener('hashchange', () => revealAnchor(location.hash));
+  revealAnchor(location.hash);
   var headers = document.querySelectorAll('table.sortable-table th[data-sort-col]');
   for(var h=0;h<headers.length;h++){
     headers[h].addEventListener('click', function(){
@@ -348,7 +414,7 @@ def _opportunity_placeholder(preset_cfg, blocked_l2):
     return (
         f'<div class="scope-box"><h3>{reason}</h3><dl>'
         '<dt>判据</dt><dd>合成池无命中，其他品类至少 2 款且近 6 个月净收入合计至少 2,000 万美元，'
-        '或有至少 1 款已验证高增新品。另核对呈现差异、融合玩法及新品验证结果。</dd>'
+        '或有至少 1 款已验证高增新品。另核对画风差异、玩法融合及新品验证结果。</dd>'
         '<dt>所需数据</dt><dd>四品类月序列、受控打标结果与逐卡证据。</dd>'
         f'<dt>启用阈值</dt><dd>{esc(threshold)}须同时满足。</dd>'
         '</dl></div>'
@@ -359,16 +425,44 @@ def _merge_fit_conditions(card: dict):
     return card.get("merge_fit_conditions") or card.get("merge2_fit_conditions")
 
 
-def validate_stage3_inputs(roster: dict, corpus: dict, matrix: dict, opps: dict, films: dict,
-                           workspace_cfg: dict, *, preset: str) -> list[str]:
+def _warn_opportunity_categories(card: dict, roster_by_uid: dict, subgenres: dict) -> None:
+    validation = card.get("new_release_validation") or {}
+    text = "\n".join(str(value) for value in (
+        card.get("title") or "",
+        card.get("summary_line") or "",
+        (card.get("supply_gap_metrics") or {}).get("benchmark_summary") or "",
+        validation.get("note") or "",
+        *(_merge_fit_conditions(card) or []),
+        *(card.get("counterexamples_and_costs") or []),
+        *(card.get("min_validation_actions") or []),
+    ))
+    folded_text = text.casefold()
+    for product in roster_by_uid.values():
+        name = product["app_name"]
+        if name.casefold() not in folded_text:
+            continue
+        app = re.escape(name)
+        for sg_id, sg in subgenres.items():
+            if sg_id == product["primary_subgenre"]:
+                continue
+            category = rf'(?:{re.escape(sg["display_name"])}|{re.escape(sg_id)})'
+            adjacent = rf'{app}[ \t（(:：]*?(?:属于|属|为|是)?[ \t]*{category}|{category}[ \t：:《「（(]*{app}'
+            if re.search(adjacent, text, re.IGNORECASE):
+                print(f'警告：机会卡 {card["opp_id"]} 的「{name}」与「{sg["display_name"]}」相邻，请核对品类。',
+                      file=sys.stderr)
+
+
+def validate_stage3_inputs(roster: dict, corpus: dict, matrix: dict, opps: dict, films: dict | None,
+                           workspace_cfg: dict, *, preset: str, subgenres: dict) -> list[str]:
     errors = []
     if corpus.get("status") != "verified" or not (corpus.get("qc_summary") or {}).get("passed"):
         errors.append("tagged_corpus.json is not verified/passed")
 
-    roster_uids = {str(p["unified_app_id"]) for p in roster.get("products", [])}
-    corpus_uids = {str(p["unified_app_id"]) for p in corpus.get("products", [])}
-    if roster_uids - corpus_uids:
-        errors.append(f"products missing from tagged_corpus: {sorted(roster_uids - corpus_uids)}")
+    roster_by_uid = {str(p["unified_app_id"]): p for p in roster.get("products", [])}
+    corpus_by_uid = {str(p["unified_app_id"]): p for p in corpus.get("products", [])}
+    missing_corpus_uids = roster_by_uid.keys() - corpus_by_uid.keys()
+    if missing_corpus_uids:
+        errors.append(f"products missing from tagged_corpus: {sorted(missing_corpus_uids)}")
 
     vocab_ids = {v["tag_id"] for v in corpus.get("vocab", [])}
     for p in corpus.get("products", []):
@@ -377,14 +471,14 @@ def validate_stage3_inputs(roster: dict, corpus: dict, matrix: dict, opps: dict,
                 errors.append(f"product {p.get('app_name')} uses unknown tag_id {t.get('tag_id')}")
 
     opp_cards = opps.get("cards", [])
-    film_list = films.get("films", [])
-    film_sources = films.get("sources", {})
-    opp_ids = {c.get("opp_id") for c in opp_cards if c.get("opp_id")}
+    film_list = films.get("films", []) if films is not None else []
     film_ids = {f.get("film_id") for f in film_list if f.get("film_id")}
 
     req_opp_fields = ("opp_id", "title", "opportunity_type", "target_tag_ids", "supply_gap_metrics",
                       "new_release_validation", "counterexamples_and_costs",
-                      "min_validation_actions", "linked_film_ids")
+                      "min_validation_actions")
+    if films is not None:
+        req_opp_fields += ("linked_film_ids",)
     for card in opp_cards:
         oid = card.get("opp_id", "unknown_opp")
         for f in req_opp_fields:
@@ -392,13 +486,48 @@ def validate_stage3_inputs(roster: dict, corpus: dict, matrix: dict, opps: dict,
                 errors.append(f"opportunity {oid}: missing required field '{f}'")
         if not _merge_fit_conditions(card):
             errors.append(f"opportunity {oid}: missing required field 'merge_fit_conditions'")
-        for tid in card.get("target_tag_ids", []):
+        target_tag_ids = card.get("target_tag_ids", [])
+        for tid in target_tag_ids:
             if tid not in vocab_ids:
                 errors.append(f"opportunity {oid}: unknown tag_id '{tid}'")
-        for fid in card.get("linked_film_ids", []):
-            if fid not in film_ids:
-                errors.append(f"opportunity {oid}: linked_film_id '{fid}' not found in film_refs.json")
+        validation = card.get("new_release_validation") or {}
+        benchmarks = []
+        for index, ref in enumerate(card.get("benchmark_products") or []):
+            if not isinstance(ref, dict) or not {"unified_app_id", "subgenre_id"} <= ref.keys():
+                errors.append(f"机会卡 {oid} 品类核对失败：benchmark_products[{index}] 必须是含 unified_app_id 和 subgenre_id 的对象")
+                continue
+            benchmarks.append(ref)
+        linked_new = validation.get("linked_new_app_ids") or []
+        for ref in [*benchmarks, *linked_new]:
+            uid = ref.get("unified_app_id") if isinstance(ref, dict) else ref
+            product = roster_by_uid.get(str(uid))
+            if product is None:
+                errors.append(f"机会卡 {oid} 品类核对失败：产品 {uid!r} 不在冻结名单中")
+                continue
+            expected = product["primary_subgenre"]
+            subgenre = ref.get("subgenre_id") if isinstance(ref, dict) else validation.get("subgenre_id", expected)
+            if subgenre != expected:
+                errors.append(f"机会卡 {oid} 品类不符：产品 {uid} 填写 {subgenre}，名单为 {expected}")
+            tagged_product = corpus_by_uid.get(str(uid), {})
+            if not any(tag.get("tag_id") in target_tag_ids for tag in tagged_product.get("tags", [])):
+                errors.append(f"机会卡 {oid} 品类核对失败：产品 {uid} 未命中本卡任何目标标签")
+        _warn_opportunity_categories(card, roster_by_uid, subgenres)
+        if films is not None:
+            for fid in card.get("linked_film_ids") or []:
+                if fid not in film_ids:
+                    errors.append(f"opportunity {oid}: linked_film_id '{fid}' not found in film_refs.json")
 
+    # Matrix tag check
+    for section_key in ("theme_rows", "presentation_rows"):
+        for row in matrix.get(section_key, []) or []:
+            if row.get("tag_id") and row["tag_id"] not in vocab_ids:
+                errors.append(f"supply_matrix {section_key}: unknown tag_id '{row['tag_id']}'")
+
+    if films is None:
+        return errors
+
+    film_sources = films.get("sources", {})
+    opp_ids = {c.get("opp_id") for c in opp_cards if c.get("opp_id")}
     fpol = workspace_cfg["film_reference_policy"]
     min_p, max_p = int(fpol["paragraphs_per_film"]["min"]), int(fpol["paragraphs_per_film"]["max"])
     forbid_film = [x.lower() for x in fpol["forbidden_film_fields"]]
@@ -446,12 +575,6 @@ def validate_stage3_inputs(roster: dict, corpus: dict, matrix: dict, opps: dict,
                 hosts.append(urlsplit(url).netloc.lower())
             if hosts and all("imdb.com" in h for h in hosts if h):
                 errors.append(f"film {fid}: cannot rely solely on IMDb synopsis; provide Wikipedia/Fandom/long review")
-
-    # Matrix tag check
-    for section_key in ("theme_rows", "presentation_rows"):
-        for row in matrix.get(section_key, []) or []:
-            if row.get("tag_id") and row["tag_id"] not in vocab_ids:
-                errors.append(f"supply_matrix {section_key}: unknown tag_id '{row['tag_id']}'")
 
     return errors
 
@@ -513,13 +636,15 @@ def _build_default_matrix(roster: dict, corpus: dict, market_idx: MarketIndex,
         merge_count = (cells.get("merge") or {}).get("count", 0)
         other_cnt = total_cnt - merge_count
         if merge_count >= 3:
-            sig, sig_lbl = "crowded", "合成红海"
-        elif preset == "full" and merge_count == 0 and other_cnt >= 2 and other_rev >= 20_000_000:
-            sig, sig_lbl = "spillover_gap", "外溢空白"
+            sig, sig_lbl = "crowded", "合成扎堆"
+        elif merge_count == 0 and other_cnt >= 2 and other_rev >= 20_000_000:
+            sig, sig_lbl = "spillover_gap", "合成空白"
         elif merge_count == 1 and (other_cnt >= 2 or preset == "pilot"):
-            sig, sig_lbl = "low_supply", "合成低供给"
+            sig, sig_lbl = "low_supply", "合成偏少"
+        elif merge_count == 2:
+            sig, sig_lbl = "merge_regular", "合成常规"
         else:
-            sig, sig_lbl = "niche_watch", "小众观察"
+            sig, sig_lbl = "niche_watch", "样本待观察"
         rows_by_axis[axis].append({
             "tag_id": tid, "label_zh": v["label_zh"], "total_count": total_cnt,
             "cells": cells, "signal_code": sig, "signal_label": sig_lbl,
@@ -581,6 +706,38 @@ def _render_tag_pill(tag_id: str, label_zh: str, axis: str, parent_label: str | 
     return f'<a class="tag-pill axis-{esc(axis)}" href="#tag-{esc(tag_id)}" data-tag-id="{esc(tag_id)}">{esc(label_zh)}</a>'
 
 
+def _gameplay_evidence(tagged: dict) -> tuple[str, bool]:
+    review = tagged.get("screenshot_review") or []
+    if not review:
+        return "暂无逐图记录。", False
+
+    selected = set()
+    located = set()
+    for tag in tagged["tags"]:
+        if tag["slot"] == "presentation":
+            index = tag.get("screenshot_index")
+            indices = index if isinstance(index, list) else [index]
+            selected.update(indices)
+            if tag.get("primary_visual_region"):
+                located.update(indices)
+
+    adopted = []
+    covered = False
+    skipped = 0
+    for shot in review:
+        index, kind = shot["screenshot_index"], shot["image_kind"]
+        if kind == "promo_only":
+            skipped += 1
+        elif kind == "raw_gameplay" or (kind == "framed_gameplay" and index in located):
+            covered = True
+            if index in selected:
+                label = "纯实机" if kind == "raw_gameplay" else "包装实机"
+                adopted.append(f"第 {index} 张（{label}）")
+
+    description = "采用" + "、".join(adopted) if adopted else "无采用的实机图"
+    return f"{description}，已跳过 {skipped} 张宣传图。", covered
+
+
 def cmd_build(args) -> int:
     workspace_cfg, subgenres_cfg, blacklist_cfg = load_configs()
     out_dir = Path(args.out_dir).resolve()
@@ -588,6 +745,7 @@ def cmd_build(args) -> int:
     preset = args.preset or run_state["preset"]
     preset_cfg = subgenres_cfg["presets"][preset]
     script_mode = args.script_mode or preset_cfg["html_script_mode"]
+    enable_film_refs = run_state.get("enable_film_refs", preset_cfg["enable_film_refs"])
 
     data_dir = out_dir / "research/data"
     gaps = _load_gap_register(data_dir)
@@ -600,16 +758,18 @@ def cmd_build(args) -> int:
     roster = strip_internal_keys(read(out_dir / "research/data/product_roster.json"))
     corpus = strip_internal_keys(read(out_dir / "research/data/tagged_corpus.json"))
     opp_path = data_dir / "opportunities.json"
-    film_path = data_dir / "film_refs.json"
     opps = strip_internal_keys(read(opp_path)) if opp_path.is_file() else {}
-    films = strip_internal_keys(read(film_path)) if film_path.is_file() else {}
     opps["cards"] = opps.get("cards") or []
-    films["films"] = films.get("films") or []
     if open_l2 and opps["cards"]:
         raise ValueError(f"unclosed L2 gaps block opportunity cards and matrix signals: {', '.join(open_l2)}")
     if not opportunities_enabled:
         opps["cards"] = []
-        films["films"] = [f for f in films["films"] if f.get("anchor_type") == "tag_fact"]
+    films = None
+    if enable_film_refs:
+        films = strip_internal_keys(read(data_dir / "film_refs.json"))
+        films["films"] = films.get("films") or []
+        if not opportunities_enabled:
+            films["films"] = [f for f in films["films"] if f.get("anchor_type") == "tag_fact"]
     matrix_path = out_dir / "research/data/supply_matrix.json"
     bundle_path = out_dir / "research/data/tagging_input_bundle.json"
     bundle = strip_internal_keys(read(bundle_path)) if bundle_path.is_file() else {"products": [], "sources": {}}
@@ -621,14 +781,21 @@ def cmd_build(args) -> int:
         _validate_matrix_cells(matrix, expected)
     else:
         matrix = expected
+    matrix_signals = {
+        row["tag_id"]: (row["signal_code"], row["signal_label"])
+        for section in ("theme_rows", "presentation_rows")
+        for row in expected[section]
+    }
 
-    v_errors = validate_stage3_inputs(roster, corpus, matrix, opps, films, workspace_cfg, preset=preset)
+    v_errors = validate_stage3_inputs(roster, corpus, matrix, opps, films, workspace_cfg,
+                                      preset=preset, subgenres=subgenres_cfg["subgenres"])
     if v_errors:
         raise ValueError("stage3 validation failed: " + "; ".join(v_errors))
 
     # Merge & sanitize sources for delivery-input.json
     merged_sources = {}
-    for src_dict in (bundle.get("sources") or {}, films.get("sources") or {}, market_res.get("sources") or {}):
+    film_sources = (films or {}).get("sources") or {}
+    for src_dict in (bundle.get("sources") or {}, film_sources, market_res.get("sources") or {}):
         for sid, sitem in src_dict.items():
             clean_s = sanitize_source_record(sitem, workspace_cfg)
             if sid in merged_sources and merged_sources[sid] != clean_s:
@@ -690,9 +857,20 @@ def cmd_build(args) -> int:
     tag_prod_map = {str(p["unified_app_id"]): p for p in corpus["products"]}
     bundle_prod_map = {str(p["unified_app_id"]): p for p in bundle.get("products", [])}
     prod_by_uid = {str(p["unified_app_id"]): p for p in roster["products"]}
+    screenshot_evidence = {uid: _gameplay_evidence(tag_prod_map[uid]) for uid in prod_by_uid}
     enabled_sgs = list(preset_cfg["enabled_subgenres"])
     all_sgs = sorted(subgenres_cfg["subgenres"],
                      key=lambda s: int(subgenres_cfg["subgenres"][s].get("display_order", 99)))
+    comparison_names = {
+        sg_id: "混变益智另计" if sg_id == "hybrid_puzzle" else subgenres_cfg["subgenres"][sg_id]["display_name"]
+        for sg_id in all_sgs
+    }
+    opportunity_labels = {
+        "呈现差异": "画风差异",
+        "融合升级": "玩法融合",
+        "外溢空白": "合成空白",
+        "新品验证窗口": "已有新品验证",
+    }
     main_card_roles = {"top10_revenue", "download_supplement", "whitelist_exception"}
     ref_sgs = list(preset_cfg["market_overview_reference_subgenres"])
     win = run_state["window"]
@@ -728,6 +906,19 @@ def cmd_build(args) -> int:
             return f'[[image {product["_icon_asset_id"]} {product["entity_id"]}]]'
         return '<div class="icon-placeholder">无图标</div>'
 
+    def _product_card_attrs(product: dict, tagged: dict, revenue: float | None) -> str:
+        tag_ids = ",".join(tag["tag_id"] for tag in tagged["tags"])
+        rev_label = f"${revenue / 1_000_000:.1f}M" if revenue is not None else "—"
+        return (
+            f'data-uid="{esc(product["unified_app_id"])}" data-tags="{esc(tag_ids)}" '
+            f'data-subgenre="{esc(product["primary_subgenre"])}" data-app-name="{esc(product["app_name"])}" '
+            f'data-rev-label="{rev_label}"'
+        )
+
+    def _publisher_name(product: dict) -> str:
+        publisher = (product.get("publisher_name") or "").strip()
+        return "" if publisher == "未提供" else esc(publisher)
+
     def _launch_dates(product: dict) -> list[tuple[str, str]]:
         st_date = product.get("effective_launch_date")
         store_date = product.get("publisher_start")
@@ -758,9 +949,10 @@ def cmd_build(args) -> int:
         )
         geo = f'<li><strong>地区属性</strong>：{esc(product["geo_note"])}</li>' if product.get("cn_ios_only") else ""
         dates = "".join(f'<li><strong>{label}</strong>：{esc(value)}</li>' for label, value in _launch_dates(product))
+        shots, _ = screenshot_evidence[str(product["unified_app_id"])]
         return (
-            '<details class="card-details"><summary>展开 Tag 依据、叙事证据、排除项与产品档案</summary>'
-            f'<ul>{tags}{geo}{dates}</ul>'
+            '<details class="card-details"><summary>查看打标依据与产品信息</summary>'
+            f'<ul>{tags}<li><strong>截图说明</strong>：{esc(shots)}</li>{geo}{dates}</ul>'
             + (f'<div class="sub-block"><strong>叙事证据</strong><ul>{narrative}</ul></div>' if narrative else "")
             + (f'<div class="sub-block"><strong>次选排除理由</strong><ul>{excluded}</ul></div>' if excluded else "")
             + (f'<div class="sub-block"><strong>买量辅证</strong><ul>{ad_html}</ul></div>' if ad_html else "")
@@ -780,7 +972,7 @@ def cmd_build(args) -> int:
             best_sg_id, best_sg_qoq = sg_id, qval
 
     # Sidebar
-    film_nav = "影视现状对照" if preset == "pilot" else "影视剧情借鉴"
+    film_nav = '<li><a href="#sec-films">5. 影视参考</a></li>' if enable_film_refs else ""
     sg_nav_links = []
     for sg_id in all_sgs:
         sg_name = subgenres_cfg["subgenres"][sg_id]["display_name"]
@@ -795,15 +987,15 @@ def cmd_build(args) -> int:
   </div>
   <nav class="sidebar-nav">
     <ol>
-      <li><a href="#sec-overview">0. 执行概览</a></li>
-      <li><a href="#sec-market">1. 市场盘面看板</a></li>
-      <li><a href="#sec-subgenres">2. 品类分章看板</a>
+      <li><a href="#sec-overview">0. 概览</a></li>
+      <li><a href="#sec-market">1. 市场盘面</a></li>
+      <li><a href="#sec-matrix">2. 标签分布矩阵与立项方向</a></li>
+      <li><a href="#sec-subgenres">3. 品类明细</a>
         <ul class="sub-nav">{''.join(sg_nav_links)}</ul>
       </li>
-      <li><a href="#sec-new-apps">3. 高增新品观察</a></li>
-      <li><a href="#sec-matrix">4. Tag 供给差与机会</a></li>
-      <li><a href="#sec-films">5. {film_nav}</a></li>
-      <li><a href="#sec-appendix">6. 词表与口径附录</a></li>
+      <li><a href="#sec-new-apps">4. 高增新品观察</a></li>
+      {film_nav}
+      <li><a href="#sec-appendix">附录</a></li>
     </ol>
   </nav>
 </aside>"""
@@ -814,19 +1006,21 @@ def cmd_build(args) -> int:
     merge_rev_tok, _ = midx.total_tok("category", "merge", "revenue", digits=2, divisor=1_000_000, suffix="M USD")
     best_qoq_tok, _ = midx.derived_tok(f"{best_sg_id}_rev_qoq3m", digits=1, suffix="%")
     best_sg_name = subgenres_cfg["subgenres"][best_sg_id]["display_name"]
-    film_count = len(films["films"])
     overview_outcome = (
-        f"沉淀 {film_count} 部影视现状对照（试点档不出立项机会卡）" if preset == "pilot"
-        else f"沉淀 {len(opps['cards'])} 条立项机会方向与 {film_count} 部影视长剧情借鉴"
+        "本次为合成试点，暂不提供立项机会卡" if preset == "pilot"
+        else f"整理出 {len(opps['cards'])} 条候选方向"
     )
+    if films is not None:
+        overview_outcome += f"，另收录 {len(films['films'])} 部影视参考"
 
     opp_summary_cards = []
     for c in opps["cards"]:
         pills = "".join(_render_tag_pill(tid, vocab_map[tid]["label_zh"], vocab_map[tid]["axis"]) for tid in c["target_tag_ids"])
+        opp_type = c["opportunity_type"]
         opp_summary_cards.append(
             f'<article class="opp-mini-card">'
-            f'<div class="opp-mini-head"><span class="badge badge-opp">{esc(c["opportunity_type"])}</span>'
-            f'<a class="opp-jump" href="#opp-{esc(c["opp_id"])}">详卡 →</a></div>'
+            f'<div class="opp-mini-head"><span class="badge badge-opp">{esc(opportunity_labels.get(opp_type, opp_type))}</span>'
+            f'<a class="opp-jump" href="#opp-{esc(c["opp_id"])}">查看详情 →</a></div>'
             f'<h3>{esc(c["title"])}</h3>'
             f'<div class="pill-row">{pills}</div>'
             f'<p>{esc(c.get("summary_line") or c["supply_gap_metrics"].get("benchmark_summary", ""))}</p>'
@@ -847,11 +1041,11 @@ def cmd_build(args) -> int:
   <div class="kpi-grid">
     <div class="kpi-card"><div class="kpi-label">Casual 宏观 近 6 个月净收入</div><div class="kpi-val">{macro_rev_tok}</div></div>
     <div class="kpi-card"><div class="kpi-label">Casual 宏观 近 6 个月下载量</div><div class="kpi-val">{macro_dl_tok}</div></div>
-    <div class="kpi-card"><div class="kpi-label">合成（二合 + 三合）近 6 个月净收入</div><div class="kpi-val">{merge_rev_tok}</div></div>
+    <div class="kpi-card"><div class="kpi-label">合成近 6 个月净收入</div><div class="kpi-val">{merge_rev_tok}</div></div>
     <div class="kpi-card"><div class="kpi-label">近 3 月环比领先赛道（{esc(best_sg_name)}）</div><div class="kpi-val">{best_qoq_tok}</div></div>
   </div>
   <div class="overview-takeaway">
-    <p>本看板基于 Sensor Tower 全球双端合并估算与受控三轴 Tag 词表（共 {len(corpus['vocab'])} 词，盲态重测主题材一致率 {corpus['qc_summary']['theme_primary_agreement']*100:.1f}%），覆盖 {len(roster['products'])} 款入围产品，{overview_outcome}。</p>
+    <p>本看板基于 Sensor Tower 全球双端合并估算与受控三轴 Tag 词表（共 {len(corpus['vocab'])} 词，盲态重测主题材一致率 {corpus['qc_summary']['theme_primary_agreement']*100:.1f}%），覆盖 {len(roster['products'])} 款入围产品。{overview_outcome}。</p>
   </div>
   <div class="opp-mini-grid">{''.join(opp_summary_cards)}</div>
 </section>"""
@@ -860,16 +1054,15 @@ def cmd_build(args) -> int:
     macro_chart_html = "[[chart macro_dual_axis]]" if "macro_dual_axis" in charts_manifest else '<p class="missing" data-status="missing">宏观双轴趋势图未生成。</p>'
     mkt_rows = []
     for sg_id in all_sgs:
-        sg_cfg = subgenres_cfg["subgenres"][sg_id]
+        sg_name = esc(comparison_names[sg_id])
         if sg_id in ref_sgs:
             r6, r6v = midx.total_tok("category", sg_id, "revenue", digits=2, divisor=1_000_000, suffix="M USD")
             d6, d6v = midx.total_tok("category", sg_id, "downloads", digits=2, divisor=1_000_000, suffix="M")
             qoq, qv = midx.derived_tok(f"{sg_id}_rev_qoq3m", digits=1, suffix="%")
             cr10, crv = midx.derived_tok(f"{sg_id}_cr10_rev", digits=1, suffix="%")
             rpd, rpv = midx.derived_tok(f"{sg_id}_rpd6m", digits=2, suffix=" USD")
-            ortho = "（正交维度·不可相加）" if not sg_cfg["additive_with_gameplay_peers"] else ""
             mkt_rows.append(
-                f'<tr><td><a href="#panel-{esc(sg_id)}">{esc(sg_cfg["display_name"])}</a>{esc(ortho)}</td>'
+                f'<tr><td><a href="#panel-{esc(sg_id)}">{sg_name}</a></td>'
                 f'<td class="num" data-sort-val="{r6v if r6v is not None else -1}">{r6}</td>'
                 f'<td class="num" data-sort-val="{d6v if d6v is not None else -1}">{d6}</td>'
                 f'<td class="num" data-sort-val="{qv if qv is not None else -999}">{qoq}</td>'
@@ -878,12 +1071,12 @@ def cmd_build(args) -> int:
             )
         else:
             mkt_rows.append(
-                f'<tr class="missing" data-status="missing"><td>{esc(sg_cfg["display_name"])}</td>'
+                f'<tr class="missing" data-status="missing"><td>{sg_name}</td>'
                 f'<td colspan="5">待四品类全量扩充</td></tr>'
             )
 
     sec1_html = f"""<section id="sec-market" class="dash-section">
-  <h2>1. 市场盘面看板</h2>
+  <h2>1. 市场盘面</h2>
   <div class="chart-box">{macro_chart_html}</div>
   <div class="table-wrap">
     <table class="data-table sortable-table">
@@ -895,31 +1088,36 @@ def cmd_build(args) -> int:
     </table>
   </div>
   <details class="info-fold">
-    <summary>查看维度正交声明与统计口径说明</summary>
+    <summary>查看统计口径说明</summary>
     <ul>
-      <li><strong>维度正交</strong>：混变益智（Hybridcasual × Puzzle）按产品模型与题材的交集定义。计算玩法大盘时，其余三类玩法品类（合成、三消、模拟经营）单独汇总。</li>
+      <li>{GAMEPLAY_MARKET_SCOPE}</li>
       <li><strong>近似 RPD 说明</strong>：{esc(subgenres_cfg['global_st_defaults']['approx_rpd_public_note'])}</li>
     </ul>
   </details>
 </section>"""
 
-    # Section 2: Subgenre Panels (Pure CSS Radio Tabs + optional JS toolbar for full)
+    # Section 3: Subgenre Panels (Pure CSS Radio Tabs + optional JS toolbar for full)
     js_toolbar = ""
     if script_mode == "whitelisted_inline_js":
         filter_btns = "".join(
-            f'<button type="button" class="js-tag-filter axis-{esc(v["axis"])}" data-tag-id="{esc(v["tag_id"])}">{esc(v["label_zh"])}</button>'
+            f'<button type="button" class="js-tag-filter axis-{axis}" '
+            f'data-tag-id="{esc(v["tag_id"])}" aria-pressed="false">{esc(v["label_zh"])}</button>'
+            for axis in ("theme_primary", "presentation", "fusion_secondary")
             for v in corpus["vocab"]
+            if v["axis"] == axis
         )
         js_toolbar = (
             '<div class="dashboard-filter-bar">'
-            '<div class="filter-bar-top"><strong>跨品类 Tag 快速筛选</strong>'
+            '<div class="filter-bar-top"><strong>按标签查找产品</strong>'
             '<span id="js-filter-status">全部产品可见</span>'
             '<div class="filter-actions">'
+            '<label><input type="checkbox" id="js-filter-only" disabled>只看命中卡片</label>'
             '<button type="button" id="js-filter-clear">清除筛选</button>'
             '<button type="button" id="js-expand-all">全部展开详情</button>'
             '<button type="button" id="js-collapse-all">全部折叠详情</button>'
             '</div></div>'
-            f'<div class="filter-btn-list">{filter_btns}</div></div>'
+            f'<div class="filter-btn-list">{filter_btns}</div>'
+            '<div id="js-filter-results" class="filter-results" aria-live="polite"></div></div>'
         )
 
     radio_inputs = []
@@ -943,7 +1141,7 @@ def cmd_build(args) -> int:
             )
             continue
 
-        sg_prods = [p for p in roster["products"]
+        sg_prods = [p for p in prod_by_uid.values()
                     if p["primary_subgenre"] == sg_id and not main_card_roles.isdisjoint(p["roles"])]
         sg_prods.sort(key=lambda p: (0 if "top10_revenue" in p["roles"] else 1 if "whitelist_exception" in p["roles"] else 2,
                                      p.get("subgenre_rank") or p.get("download_rank") or 999))
@@ -972,15 +1170,16 @@ def cmd_build(args) -> int:
                           "特例" if "whitelist_exception" in p["roles"] else
                           f"下载#{p.get('download_rank', '-')}")
             extra_badge = f'<span class="badge badge-warn">{esc(p["public_badge"])}</span>' if p.get("public_badge") else ""
-            t_ids = [t["tag_id"] for t in tp["tags"]]
+            publisher = _publisher_name(p)
+            publisher_html = f'<div class="card-pub">{publisher}</div>' if publisher else ""
             pills = _render_product_tag_pills(tp)
 
             cards_html.append(
-                f'<article id="prod-{esc(eid)}" class="product-card" data-tags="{esc(",".join(t_ids))}">'
+                f'<article id="prod-{esc(eid)}" class="product-card" {_product_card_attrs(p, tp, pr_rv)}>'
                 f'<div class="card-top">{_product_icon(p)}'
                 f'<div class="card-id"><div class="card-badges"><span class="rank-badge">{esc(rank_badge)}</span>{extra_badge}</div>'
                 f'<h4 title="{esc(p["app_name"])}">{esc(p["app_name"])}</h4>'
-                f'<div class="card-pub">{esc(p.get("publisher_name") or "未提供")}</div></div></div>'
+                f'{publisher_html}</div></div>'
                 f'<div class="mini-kpi-row">'
                 f'<div><span>近 6 个月净收入</span><strong>{pr_rev}</strong></div>'
                 f'<div><span>近 6 个月下载</span><strong>{pr_dl}</strong></div>'
@@ -991,7 +1190,7 @@ def cmd_build(args) -> int:
             )
             table_rows.append(
                 f'<tr><td>{esc(rank_badge)}</td><td><a href="#prod-{esc(eid)}">{esc(p["app_name"])}</a></td>'
-                f'<td>{esc(p.get("publisher_name") or "未提供")}</td>'
+                f'<td>{publisher or "—"}</td>'
                 f'<td class="num" data-sort-val="{pr_rv if pr_rv is not None else -1}">{pr_rev}</td>'
                 f'<td class="num" data-sort-val="{pr_dv if pr_dv is not None else -1}">{pr_dl}</td>'
                 f'<td class="num" data-sort-val="{pr_qv if pr_qv is not None else -999}">{pr_qoq}</td>'
@@ -1010,11 +1209,11 @@ def cmd_build(args) -> int:
             f'<div class="table-wrap"><table class="data-table sortable-table"><thead><tr>'
             f'<th data-sort-col="0">位次</th><th data-sort-col="1">产品</th><th data-sort-col="2">发行商</th>'
             f'<th data-sort-col="3">近 6 个月净收入</th><th data-sort-col="4">近 6 个月下载</th><th data-sort-col="5">近3月环比</th>'
-            f'<th data-sort-col="6">近似RPD</th><th>受控Tag</th></tr></thead><tbody>{"".join(table_rows)}</tbody></table></div></details></div>'
+            f'<th data-sort-col="6">近似RPD</th><th>标签</th></tr></thead><tbody>{"".join(table_rows)}</tbody></table></div></details></div>'
         )
 
-    sec2_html = f"""<section id="sec-subgenres" class="dash-section">
-  <h2>2. 品类分章看板</h2>
+    sec3_html = f"""<section id="sec-subgenres" class="dash-section">
+  <h2>3. 品类明细</h2>
   {js_toolbar}
   <div class="css-tabs">
     {''.join(radio_inputs)}
@@ -1023,31 +1222,34 @@ def cmd_build(args) -> int:
   </div>
 </section>"""
 
-    # Section 3: High-Growth New Releases
+    # Section 4: High-Growth New Releases
     new_prods = sorted(
-        (p for p in roster["products"] if p.get("is_new_release")),
+        (p for p in prod_by_uid.values() if p.get("is_new_release")),
         key=lambda p: (all_sgs.index(p["primary_subgenre"]), p.get("new_release_rank") or 0),
     )
     new_cards = []
     for p in new_prods:
         uid, eid = str(p["unified_app_id"]), p["entity_id"]
         tp = tag_prod_map[uid]
+        _, pr_rv = midx.total_tok("product", eid, "revenue")
         rev_d, _ = midx.delta_tok(eid, "revenue", digits=2, divisor=1_000_000, suffix="M USD")
         dl_d, _ = midx.delta_tok(eid, "downloads", digits=2, divisor=1_000_000, suffix="M")
         r3_rev, _ = midx.derived_tok(f"{eid}_rev_r3m", digits=2, divisor=1_000_000, suffix="M USD")
         pills = _render_product_tag_pills(tp)
-        stage_badge = "测试期新品" if p.get("release_stage") == "soft_launch" else "滚动一年内全球首发"
+        stage_badge = "测试期新品" if p.get("release_stage") == "soft_launch" else "近一年新品"
         boundary_badge = '<span class="badge badge-opp">边界席</span>' if p.get("is_boundary_seat") else ""
         date_html = "".join(f'<span>{label}：{esc(value)}</span>' for label, value in _launch_dates(p))
         jump = (
             f'<a href="#prod-{esc(eid)}">查看主榜卡</a>'
             if not main_card_roles.isdisjoint(p["roles"]) else ""
         )
+        publisher = _publisher_name(p)
+        publisher_html = f'<div class="card-pub">{publisher}</div>' if publisher else ""
         new_cards.append(
-            f'<article id="new-{esc(eid)}" class="new-app-card">'
+            f'<article id="new-{esc(eid)}" class="new-app-card" {_product_card_attrs(p, tp, pr_rv)}>'
             f'<div class="card-top">{_product_icon(p)}<div class="card-id new-head">'
             f'<strong title="{esc(p["app_name"])}">{esc(p["app_name"])}</strong>'
-            f'<div class="card-pub">{esc(p.get("publisher_name") or "未提供")}</div>'
+            f'{publisher_html}'
             f'<div class="card-badges">'
             f'<span class="badge">{esc(subgenres_cfg["subgenres"][p["primary_subgenre"]]["display_name"])}</span>'
             f'<span class="badge badge-muted">{esc(stage_badge)}</span>{boundary_badge}{jump}</div></div></div>'
@@ -1073,8 +1275,8 @@ def cmd_build(args) -> int:
         boundary_text = {True: "是", False: "否"}.get(fifth.get("is_boundary_seat"), "—")
         label = subgenres_cfg["subgenres"][sg_id]["display_name"]
         sixth_readings.append(f"{esc(label)}净收入增量 {delta_text}（第 5 席为边界席：{boundary_text}）")
-    sec3_html = f"""<section id="sec-new-apps" class="dash-section">
-  <h2>3. 高增新品观察</h2>
+    sec4_html = f"""<section id="sec-new-apps" class="dash-section">
+  <h2>4. 高增新品观察</h2>
   <p class="scope-pill">在 Sensor Tower 游戏大类中，按全球发行日期筛选运行日滚动近 1 年内的新品，含起止日。逐个复核最早发行日期，排除挂靠在老包下的应用。</p>
   <div class="new-app-list">{''.join(new_cards) or '<p class="missing" data-status="missing">当前窗口内暂无符合口径的高增真新品。</p>'}</div>
   <details class="info-fold"><summary>查看剔除与复核审计表（{len(roster.get('excluded_audit') or [])} 条）</summary>
@@ -1084,17 +1286,18 @@ def cmd_build(args) -> int:
   </details>
 </section>"""
 
-    # Section 4: Supply-Gap Matrix & Opportunity Detail Cards
-    def _render_matrix_exemplar(exemplar: dict) -> str:
+    # Section 2: Supply-Gap Matrix & Opportunity Detail Cards
+    def _render_matrix_exemplar(exemplar: dict, *, prefer_new: bool = False) -> str:
         product = prod_by_uid.get(str(exemplar.get("unified_app_id")))
         name = product["app_name"] if product else exemplar.get("app_name", "")
         short_name = esc(clean_item_name(name, 22))
         title_attr = f'title="{esc(name)}"'
         if product:
-            if not main_card_roles.isdisjoint(product["roles"]):
-                return f'<a href="#prod-{esc(product["entity_id"])}" {title_attr}>{short_name}</a>'
-            if product.get("is_new_release"):
+            has_main_card = not main_card_roles.isdisjoint(product["roles"])
+            if product.get("is_new_release") and (prefer_new or not has_main_card):
                 return f'<a href="#new-{esc(product["entity_id"])}" {title_attr}>{short_name}</a>'
+            if has_main_card:
+                return f'<a href="#prod-{esc(product["entity_id"])}" {title_attr}>{short_name}</a>'
         return f'<span {title_attr}>{short_name}</span>'
 
     def _render_matrix_rows(rows: list[dict], with_signal: bool = True) -> str:
@@ -1110,10 +1313,11 @@ def cmd_build(args) -> int:
                 cnt = int(c.get("count", 0))
                 rev_m = float(c.get("revenue_6m_usd", 0)) / 1_000_000
                 ex_links = "、".join(_render_matrix_exemplar(ex) for ex in (c.get("exemplars") or [])[:2])
-                cell_body = "缺席" if cnt == 0 else f"<strong>{cnt}款</strong> · ${rev_m:.1f}M<br><small>{ex_links}</small>"
+                cell_body = "—" if cnt == 0 else f"<strong>{cnt}款</strong> · ${rev_m:.1f}M<br><small>{ex_links}</small>"
                 tds.append(f'<td class="heat-{esc(c.get("heat_level","absent"))}">{cell_body}</td>')
             if with_signal:
-                tds.append(f'<td><span class="signal-badge sig-{esc(r.get("signal_code","niche_watch"))}">{esc(r.get("signal_label","小众观察"))}</span></td>')
+                signal_code, signal_label = matrix_signals[tid]
+                tds.append(f'<td><span class="signal-badge sig-{esc(signal_code)}">{esc(signal_label)}</span></td>')
             out.append("<tr>" + "".join(tds) + "</tr>")
         return "".join(out)
 
@@ -1126,6 +1330,7 @@ def cmd_build(args) -> int:
             f'<td class="num">{pair["count"]}</td><td>{exemplars}</td></tr>'
         )
 
+    film_titles = {f["film_id"]: f["title_zh"] for f in films["films"]} if films is not None else {}
     opp_detail_cards = []
     for c in opps["cards"]:
         pills = "".join(_render_tag_pill(tid, vocab_map[tid]["label_zh"], vocab_map[tid]["axis"]) for tid in c["target_tag_ids"])
@@ -1135,27 +1340,60 @@ def cmd_build(args) -> int:
                                divisor=mr.get("divisor", 1), suffix=mr.get("suffix", ""))
             mref_html.append(f'<li>{esc(mr.get("label","参考指标"))}：{tok}</li>')
         nr = c["new_release_validation"]
+        benchmarks = [
+            ref if isinstance(ref, dict) else {"unified_app_id": ref}
+            for ref in c.get("benchmark_products") or []
+        ]
+        new_refs = [
+            ref if isinstance(ref, dict) else {"unified_app_id": ref}
+            for ref in nr.get("linked_new_app_ids") or []
+        ]
+        categories = dict.fromkeys(
+            prod_by_uid[str(ref["unified_app_id"])]["primary_subgenre"]
+            for ref in [*benchmarks, *new_refs]
+        )
+        category_badges = "".join(f'<span class="badge">{esc(comparison_names[sg_id])}</span>' for sg_id in categories)
+        benchmark_links = "、".join(_render_matrix_exemplar(ref) for ref in benchmarks)
+        benchmark_row = f'<p><strong>标杆产品</strong>：{benchmark_links}</p>' if benchmark_links else ""
+        new_links = "、".join(_render_matrix_exemplar(ref, prefer_new=True) for ref in new_refs)
+        new_suffix = f" {new_links}" if new_links else ""
         fit_li = "".join(f'<li>{esc(x)}</li>' for x in _merge_fit_conditions(c))
         cost_li = "".join(f'<li>{esc(x)}</li>' for x in c["counterexamples_and_costs"])
         act_li = "".join(f'<li>{esc(x)}</li>' for x in c["min_validation_actions"])
-        film_links = " ".join(f'<a class="film-jump" href="#film-{esc(fid)}">影视借鉴：{esc(fid)}</a>' for fid in c["linked_film_ids"])
+        film_row = ""
+        if films is not None:
+            film_links = " ".join(
+                f'<a class="film-jump" href="#film-{esc(fid)}">影视借鉴：《{esc(film_titles[fid])}》</a>'
+                for fid in c["linked_film_ids"]
+            )
+            film_row = f'<div class="film-link-row">{film_links}</div>'
+        opp_type = c["opportunity_type"]
         opp_detail_cards.append(
             f'<article id="opp-{esc(c["opp_id"])}" class="opp-detail-card">'
-            f'<div class="opp-detail-head"><span class="badge badge-opp">{esc(c["opportunity_type"])}</span><h3>{esc(c["title"])}</h3></div>'
+            f'<div class="opp-detail-head"><span class="badge badge-opp">{esc(opportunity_labels.get(opp_type, opp_type))}</span>'
+            f'{category_badges}<h3>{esc(c["title"])}</h3></div>'
             f'<div class="pill-row">{pills}</div>'
             f'<p>{esc(c["supply_gap_metrics"].get("benchmark_summary",""))}</p>'
+            f'{benchmark_row}'
             + (f'<ul class="metric-ref-list">{"".join(mref_html)}</ul>' if mref_html else "")
-            + f'<p class="nr-val"><strong>新品验证状态</strong>：{esc(nr.get("note",""))}</p>'
-            f'<details class="card-details" open><summary>合成适配条件、反例代价与最小验证动作</summary>'
-            f'<div class="opp-cols"><div><strong>合成适配条件</strong><ul>{fit_li}</ul></div>'
-            f'<div><strong>反例与代价</strong><ul>{cost_li}</ul></div></div>'
-            f'<div><strong>立项最小验证动作</strong><ol>{act_li}</ol></div>'
-            f'<div class="film-link-row">{film_links}</div></details></article>'
+            + f'<p class="nr-val"><strong>近一年新品表现</strong>：{esc(nr.get("note",""))}{new_suffix}</p>'
+            f'<details class="card-details"><summary>适配要点、主要风险与前置验证</summary>'
+            f'<div class="opp-cols"><div><strong>合成适配要点</strong><ul>{fit_li}</ul></div>'
+            f'<div><strong>主要风险与成本</strong><ul>{cost_li}</ul></div>'
+            f'<div><strong>立项前验证建议</strong><ol>{act_li}</ol></div></div>'
+            f'{film_row}</details></article>'
         )
 
     matrix_note = "（试点模式展示合成供给密度，其余三品类待全量扩充）" if preset == "pilot" else ""
-    subgenre_th = "".join(f'<th>{esc(subgenres_cfg["subgenres"][s]["display_name"])}</th>' for s in all_sgs)
-    signal_th = '<th>合成供给差信号</th>' if opportunities_enabled else ""
+    if preset == "pilot":
+        matrix_sample = f'本矩阵的 {len(roster["products"])} 款样本为合成单品类冻结样本，覆盖主榜前 10、下载增补位与近一年新品的并集。'
+    else:
+        matrix_sample = (
+            "本矩阵的 67 款样本仅覆盖四品类主榜前 10、下载增补位与近一年新品的并集，"
+            "11–30 名的产品不再补录，合成空白只表示该样本内没有对应产品，复核方向时须回到 11–30 名核对。"
+        )
+    subgenre_th = "".join(f'<th>{esc(comparison_names[s])}</th>' for s in all_sgs)
+    signal_th = '<th>合成供给状态</th>' if opportunities_enabled else ""
     matrix_cols = 1 + len(all_sgs) + int(opportunities_enabled)
     theme_groups = defaultdict(list)
     for row in matrix.get("theme_rows", []):
@@ -1170,12 +1408,12 @@ def cmd_build(args) -> int:
         theme_parts.append(_render_matrix_rows(rows, opportunities_enabled))
 
     opp_block = "".join(opp_detail_cards) if opportunities_enabled else _opportunity_placeholder(preset_cfg, bool(open_l2))
-    sec4_html = f"""<section id="sec-matrix" class="dash-section">
-  <h2>4. Tag 供给差热力矩阵与立项机会详卡</h2>
+    sec2_html = f"""<section id="sec-matrix" class="dash-section">
+  <h2>2. 标签分布矩阵与立项方向</h2>
   <p class="muted">按主题材与呈现两段展示各品类覆盖度与 6 个月 ST 净收入合计{esc(matrix_note)}。</p>
   <div class="table-wrap">
     <table class="data-table matrix-table">
-      <thead><tr><th>受控 Tag</th>{subgenre_th}{signal_th}</tr></thead>
+      <thead><tr><th>标签</th>{subgenre_th}{signal_th}</tr></thead>
       <tbody>
         <tr class="group-divider"><td colspan="{matrix_cols}">一、主题材轴（Theme Primary）</td></tr>
         {''.join(theme_parts)}
@@ -1184,6 +1422,7 @@ def cmd_build(args) -> int:
       </tbody>
     </table>
   </div>
+  <p class="muted">{matrix_sample}</p>
   <details class="info-fold"><summary>查看「主题材 × 呈现」二元组合频次对照表（{len(matrix.get('pairs') or [])} 组）</summary>
     <div class="table-wrap"><table class="data-table"><thead><tr><th>主题材</th><th>呈现形式</th><th>命中款数</th><th>代表产品</th></tr></thead>
     <tbody>{''.join(pair_rows)}</tbody></table></div>
@@ -1192,35 +1431,37 @@ def cmd_build(args) -> int:
 </section>"""
 
     # Section 5: Film Narrative References
-    opp_title_map = {c["opp_id"]: c["title"] for c in opps["cards"]}
-    film_cards = []
-    for f in films["films"]:
-        if preset == "pilot" and f.get("anchor_type") == "tag_fact":
-            tag_id = _film_tag_id(f)
-            anchor_html = (
-                '<span class="badge badge-muted">高频现状对照·非立项推荐</span>'
-                f'<a class="badge" href="#tag-{esc(tag_id)}">现状标签：{esc(vocab_map[tag_id]["label_zh"])}</a>'
+    sec5_html = ""
+    if films is not None:
+        opp_title_map = {c["opp_id"]: c["title"] for c in opps["cards"]}
+        film_cards = []
+        for f in films["films"]:
+            if preset == "pilot" and f.get("anchor_type") == "tag_fact":
+                tag_id = _film_tag_id(f)
+                anchor_html = (
+                    '<span class="badge badge-muted">高频现状对照·非立项推荐</span>'
+                    f'<a class="badge" href="#tag-{esc(tag_id)}">现状标签：{esc(vocab_map[tag_id]["label_zh"])}</a>'
+                )
+                hook_label = "现状对照点"
+            else:
+                oid = f["linked_opportunity_id"]
+                anchor_html = f'<a class="badge badge-opp" href="#opp-{esc(oid)}">挂钩：{esc(opp_title_map[oid])}</a>'
+                hook_label = "可借用叙事结构"
+            cites = " ".join(f'[[cite {sid}]]' for sid in f["evidence_source_ids"])
+            p1 = f["plot_paragraphs"][0]
+            all_paras = "".join(f'<p>{esc(para)}</p>' for para in f["plot_paragraphs"])
+            film_cards.append(
+                f'<article id="film-{esc(f["film_id"])}" class="film-card">'
+                f'<div class="film-head"><h3>《{esc(f["title_zh"])}》（{f["release_year"]}） '
+                f'<small><i>{esc(f.get("title_orig", ""))}</i></small></h3>{anchor_html}</div>'
+                f'<p class="film-hook"><strong>{hook_label}</strong>：{esc(f["narrative_hook"])}</p>'
+                f'<p class="film-preview">{esc(p1[:110])}…</p>'
+                f'<details class="card-details"><summary>展开完整剧情介绍（共 {len(f["plot_paragraphs"])} 段）</summary>'
+                f'{all_paras}<div class="film-cite">剧情来源：{cites}</div></details></article>'
             )
-            hook_label = "现状对照点"
-        else:
-            oid = f["linked_opportunity_id"]
-            anchor_html = f'<a class="badge badge-opp" href="#opp-{esc(oid)}">挂钩：{esc(opp_title_map[oid])}</a>'
-            hook_label = "可借用叙事结构"
-        cites = " ".join(f'[[cite {sid}]]' for sid in f["evidence_source_ids"])
-        p1 = f["plot_paragraphs"][0]
-        all_paras = "".join(f'<p>{esc(para)}</p>' for para in f["plot_paragraphs"])
-        film_cards.append(
-            f'<article id="film-{esc(f["film_id"])}" class="film-card">'
-            f'<div class="film-head"><h3>《{esc(f["title_zh"])}》（{f["release_year"]}） '
-            f'<small><i>{esc(f.get("title_orig", ""))}</i></small></h3>{anchor_html}</div>'
-            f'<p class="film-hook"><strong>{hook_label}</strong>：{esc(f["narrative_hook"])}</p>'
-            f'<p class="film-preview">{esc(p1[:110])}…</p>'
-            f'<details class="card-details"><summary>展开完整剧情介绍（共 {len(f["plot_paragraphs"])} 段）</summary>'
-            f'{all_paras}<div class="film-cite">剧情来源：{cites}</div></details></article>'
-        )
-    film_scope = "按高频现状标签选片" if preset == "pilot" else "按机会卡挂钩选片"
-    sec5_html = f"""<section id="sec-films" class="dash-section">
-  <h2>5. {film_nav}</h2>
+        film_scope = "按高频现状标签选片" if preset == "pilot" else "按机会卡挂钩选片"
+        sec5_html = f"""<section id="sec-films" class="dash-section">
+  <h2>5. 影视参考</h2>
   <p class="muted">{film_scope}（欧美高知名度剧影优先），每部提供 2–3 段完整剧情介绍与来源。</p>
   <div class="film-grid">{''.join(film_cards)}</div>
 </section>"""
@@ -1235,11 +1476,30 @@ def cmd_build(args) -> int:
         for t in tp["tags"]:
             tag_to_prods[t["tag_id"]].append(rp)
 
+    def _format_vocab_examples(examples) -> str:
+        if not isinstance(examples, list):
+            return str(examples)
+        formatted = []
+        for example in examples:
+            if isinstance(example, str):
+                formatted.append(example)
+                continue
+            uid = example.get("unified_app_id")
+            product = prod_by_uid.get(str(uid))
+            name = product["app_name"] if product is not None else uid
+            quote = example.get("evidence_quote")
+            details = " ".join(part for part in (example.get("reason"), f'原文「{quote}」' if quote else "") if part)
+            if name and details:
+                formatted.append(f"{name}：{details}")
+            else:
+                formatted.append(str(name or details))
+        return "；".join(formatted)
+
     vocab_cards = []
     for v in corpus["vocab"]:
         tid = v["tag_id"]
-        inc = "；".join(v["include_examples"]) if isinstance(v["include_examples"], list) else str(v["include_examples"])
-        exc = "；".join(v["exclude_examples"]) if isinstance(v["exclude_examples"], list) else str(v["exclude_examples"])
+        inc = _format_vocab_examples(v["include_examples"])
+        exc = _format_vocab_examples(v["exclude_examples"])
         backlinks = "、".join(
             f'<a href="#prod-{esc(p["entity_id"])}">{esc(p["app_name"])}</a>'
             if not main_card_roles.isdisjoint(p["roles"])
@@ -1349,13 +1609,17 @@ def cmd_build(args) -> int:
         gap_table = (f'<div class="table-wrap"><table class="data-table"><thead><tr>{gap_headers}</tr></thead>'
                      f'<tbody>{gap_rows}</tbody></table></div>')
 
-    sec6_html = f"""<section id="sec-appendix" class="dash-section">
-  <h2>6. 受控词表与数据口径附录</h2>
-  <h3>6.1 受控 Tag 词表索引（共 {len(corpus['vocab'])} 词）</h3>
+    covered_products = sum(covered for _, covered in screenshot_evidence.values())
+    pool_size = len(prod_by_uid)
+    coverage_pct = f"{covered_products / pool_size:.1%}".replace(".0%", "%") if pool_size else "—"
+    sources_summary = "请先展开数据来源，再查看引用" if script_mode == "zero_js" else "查看详情"
+    appendix_html = f"""<section id="sec-appendix" class="dash-section">
+  <h2>附录</h2>
+  <h3>附录一、标签词表</h3>
   <div class="vocab-grid">{''.join(vocab_cards)}</div>
-  <h3>6.2 一致性重测读数与裁决记录</h3>
+  <h3>附录二、打标复核与职责声明</h3>
   <p class="scope-pill">{esc(qc_sum['protocol_disclosure'])}</p>
-  <p>{esc(blacklist_cfg['blind_retest_protocol']['model_inheritance_basis'])}</p>
+  <p>script_gate_receipt 由脚本写入、记录验真命令与退出码，signoff_note 由签字人写入、记录业务裁决与依据。</p>
   {unit_distribution_html}
   <p>抽检样本：{qc_sum['sample_evaluated']} 款 · {' · '.join(qc_readings)}。</p>
   <details class="info-fold"><summary>展开抽检逐款明细与裁决记录</summary>
@@ -1364,20 +1628,24 @@ def cmd_build(args) -> int:
     {collision_html}
     {f'<ul>{adj_rows}</ul>' if adj_rows else '<p class="muted">本次无额外分歧裁决记录。</p>'}
   </details>
-  <h3>6.3 统计口径与估算边界声明</h3>
+  <h3>附录三、统计口径与实机图覆盖率</h3>
   <div class="scope-box">
+    <p>实机图覆盖率 {covered_products}/{pool_size}（{coverage_pct}）。</p>
     <ul>
       <li><strong>两个统计窗口</strong>。市场规模与增量使用近 6 个完整自然月，增量按窗内后 3 个月减前 3 个月计算。新品首发资格按运行日滚动近 1 年核验，起止日期均计入。若在 2 月 29 日运行，起点取上一年 2 月 28 日。首发晚于市场统计窗末日的合格新品因缺完整月数据，暂不参与增量排名。</li>
       <li><strong>画风判定单元</strong>。按第 1 至第 5 张的顺序扫描所有已取得的商店截图。合成和三消优先找棋盘与主场景，以棋盘和核心交互物件为主，主场景用于核验。混变益智优先看实机棋盘，模拟经营优先看实机主场景。缺少配对画面时注明原因，单边截图最高为中置信度。补证后仍无实机图的样本只记低置信度，不计入画风占比。</li>
       <li><strong>画风占比与一致率</strong>。报告画风占比前先列判定单元分布，跨产品只在相同判定单元内比较。盲测按同一规则独立选图，一致率衡量同一词表下的标注稳定性。判定单元有分歧时交终裁。</li>
       <li><strong>收入与下载来源</strong>：全部市场大盘、榜单、近似 RPD 与环比均由 Sensor Tower 双端合并估算算出，为扣除平台分成后的应用内购净收入估算，不含广告变现（IAA）及站外网页充值；若与未扣渠道分成的毛流水口径横向对照，通常存在约三成渠道分成差异。</li>
       <li><strong>地理与商店覆盖</strong>：采用 Sensor Tower 全球口径（App Store + Google Play，包含中国大陆 iOS，不含中国大陆第三方安卓商店与小游戏）。纯中国大陆 iOS 发行产品已在产品卡展开层单独注记。</li>
-      <li><strong>隔离与去重原则</strong>：模拟经营与混变益智的下载增补位、以及混变益智中个别 3D 配对单列特例均不计入自动标签池 CR10 分母。混变益智单列，其余三类玩法品类（合成、三消、模拟经营）单独汇总。</li>
+      <li><strong>隔离与去重原则</strong>：{GAMEPLAY_MARKET_SCOPE}下载增补位与单列特例不计入对应品类的市场 CR10 分母。</li>
     </ul>
   </div>
-  <h3>6.4 脱敏数据来源卡</h3>
-  <section id="sources" class="sources-grid">[[sources]]</section>
-  <h3>6.5 缺项登记表</h3>
+  <h3>附录四、数据来源</h3>
+  <details id="sources-fold" class="info-fold">
+    <summary>{sources_summary}</summary>
+    <section id="sources" class="sources-grid">[[sources]]</section>
+  </details>
+  <h3>附录五、缺项登记</h3>
   {gap_table}
 </section>"""
 
@@ -1404,7 +1672,7 @@ def cmd_build(args) -> int:
       {sec3_html}
       {sec4_html}
       {sec5_html}
-      {sec6_html}
+      {appendix_html}
     </main>
   </div>{inline_script_tag}
 </body>

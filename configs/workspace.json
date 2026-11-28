@@ -22,6 +22,7 @@
       "delivery_input": "research/delivery-input.json",
       "delivery_meta": "research/delivery.json",
       "packet_manifest": "research/data/packet_manifest.json",
+      "signoff_html": "tag_vocab_signoff.html",
       "handoff_questions": "research/data/handoff_questions.md",
       "handoff_resume": "research/handoff_resume.md"
     }
@@ -45,6 +46,8 @@
     "human_stop_policy": {
       "only_mandatory_stop": "stage2_vocab_signoff",
       "stop_delivery_mode": "plain_text_and_file",
+      "signoff_html_filename": "tag_vocab_signoff.html",
+      "require_script_gate_receipt": true,
       "forbid_option_cards": true,
       "forbid_choice_prompt_tools": ["ask_user_question", "choice_card", "option_card"],
       "questions_file": "research/data/handoff_questions.md",
@@ -94,7 +97,8 @@
         "allowed_features": [
           "tag_pill_filter_highlight",
           "table_column_sort",
-          "expand_collapse_all_details"
+          "expand_collapse_all_details",
+          "anchor_tab_and_sources_sync"
         ]
       }
     }

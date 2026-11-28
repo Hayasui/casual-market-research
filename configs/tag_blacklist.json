@@ -14,8 +14,9 @@
   ],
   "tag_format": {
     "tag_id_regex": "^[a-z][a-z0-9_]{1,39}$",
-    "label_zh_recommended_max_chars": 6,
-    "label_zh_hard_max_chars": 8,
+    "label_zh_min_chars": 2,
+    "label_zh_recommended_max_chars": 8,
+    "label_zh_hard_max_chars": 10,
     "require_label_en": true,
     "require_definition": true,
     "require_include_and_exclude_examples": true
@@ -36,7 +37,7 @@
         "min": 1,
         "max": 1,
         "badge_color_role": "theme",
-        "guidance": "只记录玩家反复经营、修复或处理的对象，例如「烘焙店」「海滨餐厅」。一级取自 primary_domains，填写表中的 id。",
+        "guidance": "只记录玩家反复经营、修复或处理的对象。以对象或场景名词命名，例如「烘焙店」「海滨餐厅」。不要为凑字数加上「经营」「建设」「管理」，玩法词留在题材轴之外。一级取自 primary_domains，填写表中的 id。",
         "allow_parent_domain": true,
         "require_parent_domain": true
       },
@@ -46,7 +47,7 @@
         "min": 1,
         "max": 1,
         "badge_color_role": "presentation",
-        "guidance": "只记录商店实机棋盘与主场景可指认的呈现风格，按「人物与物体比例、渲染质感与笔触光影、色彩饱和度、空间立体度」四项可见特征锚定。绘制型分平涂图标、欧美绘本卡通、东方勾线彩绘；立体型分圆润亮彩立体、细材质立体。不反推渲染技术；未经实证不得在 tag_id 或 label_zh 中使用 2D/3D。"
+        "guidance": "只记录商店实机棋盘与主场景可指认的呈现风格。用可见材质与光影命名，留意是否有高光明显或柔和体积明暗的特征。按人物与物体比例、渲染质感与笔触光影、色彩饱和度、空间立体度四项判断。绘制型分平涂图标、欧美绘本卡通、东方勾线彩绘。立体型分圆润亮彩立体、细材质立体。不反推渲染技术。未经实证不得在 tag_id 或 label_zh 中使用 2D/3D。"
       },
       "fusion_secondary": {
         "label_zh": "副题材或玩法融合",
@@ -54,7 +55,7 @@
         "min": 0,
         "max": 1,
         "badge_color_role": "fusion",
-        "guidance": "副题材或融合玩法有独立操作或进度时才填写，例如家园装修、商业经营、角色换装。"
+        "guidance": "副题材或融合玩法具有独立循环，可从独立操作或进度中辨认时才填写。用对象加循环命名，并在词名中写清排除边界，例如用「家园选材布置」排除只随主线自动翻新的场景。"
       }
     }
   },
@@ -155,6 +156,11 @@
       "drama"
     ]
   },
+  "concentration_policy": {
+    "axes": ["theme_primary", "presentation", "fusion_secondary"],
+    "min_hits": 5,
+    "min_axis_denominator": 10
+  },
   "presentation_policy": {
     "forbid_dimension_tokens_in_label_or_id": ["2d", "3d"],
     "require_render_tech_verification_for_dimension_tokens": true,
@@ -171,6 +177,8 @@
   "visual_unit_policy": {
     "controlled_enum": ["board_and_scene_pair", "gameplay_board", "main_scene", "promo_or_portrait_only"],
     "forbidden_high_conf_units": ["promo_or_portrait_only"],
+    "image_kind_enum": ["raw_gameplay", "framed_gameplay", "promo_only"],
+    "forbidden_presentation_image_kinds": ["promo_only"],
     "preferred_unit_by_subgenre": {
       "merge": "board_and_scene_pair",
       "match_3": "board_and_scene_pair",
@@ -360,6 +368,8 @@
     "active_vocab_note": "激活词表沿用 mode_thresholds 的 pilot 12 到 20、full 25 到 40；全库候选目录不设硬顶"
   },
   "mode_thresholds": {
+    "signoff_artifact_html": "tag_vocab_signoff.html",
+    "signoff_responsibility_fields": ["script_gate_receipt", "signoff_note"],
     "pilot": {
       "vocab_min": 12,
       "vocab_max": 20,

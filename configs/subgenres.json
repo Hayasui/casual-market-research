@@ -644,6 +644,7 @@
         "every_card_has_evidence": true,
         "note": "四项同时成立才启用完整机会卡"
       },
+      "enable_film_refs": false,
       "film_refs_target": {
         "min": 2,
         "max": 2
@@ -694,6 +695,7 @@
         "every_card_has_evidence": true,
         "note": "四项同时成立才启用完整机会卡"
       },
+      "enable_film_refs": false,
       "film_refs_target": {
         "min": 6,
         "max": 8

@@ -81,7 +81,7 @@
 1. **批量拉序列（Step 1.4）**。将 Top10、下载增补、白名单特例与待核 ST 新品候选按 `unified_app_id` 全局去重，分批（每批 ≤100 个）调用 `sensortower-get-app-performance-metrics` 拉取 6 个完整自然月的收入与下载，再按 3.3 冻结名单。纯第三方线索只留审计。冻结池内产品的六个月净收入合计记为 `frozen_roster_6m_revenue_usd`，仅用于池内 Tag 占比。合成 CR10 的分母为同期合成全大盘净收入。
 2. **单品富化（Step 1.5）**：对去重后的每款产品采集三类材料：
    - **ST 评论**：调 `get-app-reviews-text` 查近 60–90 天美区 iOS 英文评论（`limit=30`）；无美区 iOS 时改查 Android `languages: ["en"]`。
-   - **商店元数据与截图**：按 ST `sub_apps` 构造 `app_key` 调 `app_info`（必验 `APP_ID != null`，同时识别 `publisher_area` 是否纯中国大陆发行以置 `cn_ios_only` 标记）与 `app_detail_desc`（取英文完整描述与最多 5 张 `screenshot_urls`）。
+   - **商店元数据与截图**：按 ST `sub_apps` 构造 `app_key` 调 `app_info`（必验 `APP_ID != null`，同时识别 `publisher_area` 是否纯中国大陆发行以置 `cn_ios_only` 标记）与 `app_detail_desc`（取英文完整描述与最多 5 张 `screenshot_urls`）。凡入围产品的 ST 回执缺 `publisher_name`，均用第三方元数据 `app_info` 回填 `publisher_name`。在审计中记录回填来源，ST 数值沿用原回执。
    - **买量辅证与图标索引（按品类批量）**：每品类调 1 次 `competitor_category_rankings(dim="m_app_id")` 对齐 `m_app_id` 与图标，再批量调 1–2 次 `material_appgrowing` 取高曝光前 3–5 条英文 slogan。
 3. **四品类调用量硬上限与子代理分片**：
    - **单会话/单子代理的逐个富化调用硬上限为 50 次**（对应约 13–17 款产品 × 3 次逐个调用 + 2 次批量调用）。
@@ -95,15 +95,15 @@
 1. 主会话核对 `<报告目录>/research/raw/` 齐全（有 `truncated: true` 的第三方响应先跑 `data_pipeline.py fetch-oss`），生成原始文件索引 `<报告目录>/research/data/stage1_manifest.json`。
 2. 依次运行三条命令（全部退出码须为 `0`）：
    ```text
-   python <Skill目录>/scripts/data_pipeline.py build \
+   python -B <Skill目录>/scripts/data_pipeline.py build \
      --out-dir <报告目录> \
      --manifest <报告目录>/research/data/stage1_manifest.json
 
-   python <Skill目录>/scripts/research_tools.py market \
+   python -B <Skill目录>/scripts/research_tools.py market \
      --input <报告目录>/research/data/market_input.json \
      --output <报告目录>/research/data/market_result.json
 
-   python <Skill目录>/scripts/research_tools.py chart \
+   python -B <Skill目录>/scripts/research_tools.py chart \
      --input <报告目录>/research/charts/macro_dual_axis_spec.json \
      --output <报告目录>/research/charts/macro_dual_axis.svg \
      --metadata <报告目录>/research/charts/macro_dual_axis.json

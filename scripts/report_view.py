@@ -24,7 +24,11 @@ def members_text(scope, field):
     values = scope.get(field, [])
     members = "、".join(label(v) for v in values)
     title = scope.get("label")
-    return f"{title}（{members}）" if title and title != scope.get("id") and title != members else members or title or "未说明"
+    if title:
+        separators = str.maketrans(dict.fromkeys("+＋/／、,，", " "))
+        if title.translate(separators).split() == members.translate(separators).split():
+            return title
+    return f"{title}（{members}）" if title and title != scope.get("id") else members or title or "未说明"
 
 
 def short_number(value):

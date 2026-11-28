@@ -1,6 +1,6 @@
 # Stage 3：供给差矩阵、立项机会卡与影视剧情借鉴规范
 
-本阶段消费已冻结的 `research/data/market_result.json`、`product_roster.json` 与 `tagged_corpus.json`，产出三份结构化 JSON：`supply_matrix.json`、`opportunities.json`、`film_refs.json`。所有面向成稿的文案仅陈述研究定义与客观数据，绝不出现内部口径或来源缩写。
+本阶段读取已冻结的 `research/data/market_result.json`、`product_roster.json` 与 `tagged_corpus.json`，生成 `supply_matrix.json` 与 `opportunities.json`。启用影视参考时另生成 `film_refs.json`。成稿文案使用读者能直接理解的研究口径与客观数据。
 
 ---
 
@@ -8,27 +8,53 @@
 
 ### 1.1 两类互补视图
 1. **视图 A · Tag × 品类供给热力矩阵**（拆为「主题材轴」与「呈现轴」两段，段内按跨品类命中总数降序）：
-   - **全量模式（`full`）列结构**：`Tag｜合成｜三消｜混变益智｜模拟经营｜合成供给差信号`。Tag 链接至附录词表。
-   - **`full` 单格内容**：`命中产品数` + `该格产品 6 个月 ST 净收入合计`（白名单特例与下载增补位单注，不重复累加跨列产品）+ `1–2 个头部产品简称`（带产品卡锚点）。
+   - **全量模式（`full`）列结构**：`标签｜合成｜三消｜混变益智另计｜模拟经营｜合成供给状态`。标签链接至附录词表。
+   - **`full` 单格内容**：`命中产品数` + `该格产品 6 个月 ST 净收入合计`（白名单特例与下载增补位单注，不重复累加跨列产品）+ `1–2 个头部产品简称`（带产品卡锚点）。零命中的单元格显示 `—`。
    - **四档热力着色**：
-     - `0 款` → `heat_level: "absent"`（虚线浅灰，标「缺席」）
-     - `1 款` → `heat_level: "singleton"`（浅琥珀，标「孤例」）
+     - `0 款` → `heat_level: "absent"`（虚线浅灰，显示 `—`）
+     - `1 款` → `heat_level: "singleton"`（浅琥珀）
      - `2–3 款` → `heat_level: "moderate"`（浅绿）
      - `≥4 款` → `heat_level: "crowded"`（深绿）
    - **`pilot` 单品类降级规则**：仅 `merge` 有打标数据。其余三列标 `status: "missing"`，渲染为 `data-status="missing"`，文案为「待四品类全量扩充」。试点的组合统计见视图 B。
 2. **视图 B · 高频「主题材 × 呈现」二元组合对照表**：
    - `full` 用于观察同一题材在不同画风与渲染形态中的供给差。`pilot` 只列合成样本中组合的命中产品数与占比。
 
-### 1.2 右侧「合成供给差信号」量化判据
+### 1.2 右侧「合成供给状态」量化判据
 
 | 信号徽章 | `signal_code` | 判定条件（`full` 四品类） |
 |---|---|---|
-| **外溢空白** | `spillover_gap` | 合成 `0 款`，其余三类合计 `≥2 款`，且其余三类命中产品 6 个月 ST 净收入合计 `≥ $20M` |
-| **合成低供给** | `low_supply` | 合成仅 `1 款`，且其余三类合计 `≥2 款` |
-| **合成红海** | `crowded` | 合成 `≥3 款` |
-| **小众观察** | `niche_watch` | 以上三类信号均未命中（**严禁包装成蓝海推荐**） |
+| **合成空白** | `spillover_gap` | 合成 0 款，其余三类合计 ≥2 款，且其余三类命中产品 6 个月 ST 净收入合计 ≥ $20M |
+| **合成偏少** | `low_supply` | 合成 1 款，且其余三类合计 ≥2 款 |
+| **合成常规** | `merge_regular` | 合成 2 款 |
+| **合成扎堆** | `crowded` | 合成 ≥3 款 |
+| **样本待观察** | `niche_watch` | 以上四档均未命中，含他类样本不足或打标未覆盖。严禁包装成蓝海推荐 |
 
-`pilot` 不输出信号列。「合成红海」「外溢空白」「合成低供给」三类写法一律禁入正文。矩阵只在合成列填实测供给，视图 B 的组合占比以已冻结合成打标产品总数为分母。
+`pilot` 不输出「合成供给状态」列。矩阵只在合成列填实测供给，视图 B 的组合占比以已冻结合成打标产品总数为分母。
+
+先核对打标覆盖，再按表取一个状态。打标未覆盖、无法判定时用「样本待观察」。
+
+### 1.3 矩阵读数与来源对应
+
+| 对象 | 取数与显示 |
+|---|---|
+| 矩阵行 | 以受控词表的 `tag_id` 匹配，公开显示中文标签 |
+| 主题材组 | 显示一级分组标题，命中与读数仍落在二级标签行 |
+| 品类归属 | 按冻结名单的 `subgenre_id` 对到该行的品类格 |
+| 产品款数 | 同一标签、同一品类内按 `unified_app_id` 计一次 |
+| 收入读数 | 从 `market_result.json` 绑定该格命中产品的 6 个月 ST 净收入 |
+| 代表产品 | 只取该格的命中产品，链接到同一款产品卡 |
+| 零命中 | 该格显示 `—`，保留零款对应的热力底色 |
+| 未覆盖 | 保留缺失说明，不能用 `—` 代替 |
+| 合成供给状态 | 按 1.2 核对该行的打标覆盖与相关品类读数，显示中文状态 |
+
+视图 A 的段内排序按跨品类命中总数，跨列重复的产品只计一次。
+视图 B 的命中款数与占比取同一批打标样本。组合命中依据为同一款产品同时具有两个标签。
+
+`full` 在矩阵下方原样显示以下说明。
+
+本矩阵的 67 款样本仅覆盖四品类主榜前 10、下载增补位与近一年新品的并集，11–30 名的产品不再补录，合成空白只表示该样本内没有对应产品，复核方向时须回到 11–30 名核对。
+
+`pilot` 在同一位置说明合成单品类的实际冻结样本数与覆盖范围。
 
 ---
 
@@ -39,14 +65,40 @@
 
 | 序号 | JSON 字段 | 必填内容与写法要求 |
 |---:|---|---|
-| 1 | `opp_id`、`title`、`target_tag_ids`、`opportunity_type` | 唯一 ID（如 `opp_01`）、精炼方向名、2–3 个受控 `tag_id`、机会类型徽章（`外溢空白` / `呈现差异` / `融合升级` / `新品验证窗口`） |
+| 1 | `opp_id`、`title`、`target_tag_ids`、`opportunity_type` | 唯一 ID（如 `opp_01`）、精炼方向名、2–3 个受控 `tag_id`、机会类型徽章（`合成空白` / `画风差异` / `玩法融合` / `已有新品验证`） |
 | 2 | `supply_gap_metrics` | 合成当前供给读数与已验证品类的代表产品与 6 个月 ST 净收入；**所有 ST 数值以 `metric_ref` 对象指向 `market_result.json`**，编译时自动转为 `[[metric]]` 绑定 |
 | 3 | `new_release_validation` | 关联 Stage 1 核验的近 12 个月新品（写明验证还是推翻该方向，附产品锚点与近 3 月绝对增量）；若无对应新品，**必须显式填 `status: "unvalidated_cross_category_inference"` 与文案「暂无近 12 月新品验证，属存量跨品类推断」** |
 | 4 | `merge_fit_conditions` | 从合成核心体验出发写 2–3 条成立条件：棋盘 48px 图块辨识度、6–8 阶合成链自然度、订单与局外装修/剧情推进的咬合方式 |
 | 5 | `counterexamples_and_costs` | **核心防偏栏**：必须正面回答「为何合成头部目前缺席或偏少」——点明美术/剧情产能成本、棋盘视觉同质风险、长线付费深度瓶颈或已知反例代价 |
-| 6 | `min_validation_actions` & `linked_film_ids` | 不超过 3 条可落地的低成本立项前置验证动作（如买量题材图文 CTR 烟雾测试、核心合成链视觉辨识原型测试）；并绑定 1–2 部影视借鉴 `film_id` |
+| 6 | `min_validation_actions` & `linked_film_ids` | 不超过 3 条可落地的低成本立项前置验证动作（如买量题材图文 CTR 烟雾测试、核心合成链视觉辨识原型测试）。启用影视参考时并绑定 1–2 部 `film_id`，关闭时该数组留空 |
+
+### 2.1 卡片文案与读数
+
+「合成空白」用于达到 1.2 节 `spillover_gap` 判据的方向。「画风差异」用于呈现差异。「玩法融合」用于带独立玩法循环的组合。「已有新品验证」用于有近一年新品支持的方向。
+指向混变益智品类的机会卡，其品类徽章写「混变益智另计」，与矩阵列头一致；其余品类的徽章写正式中文名。
+
+| 卡片小标题 | 读取字段 |
+|---|---|
+| 合成适配要点 | `merge_fit_conditions` |
+| 主要风险与成本 | `counterexamples_and_costs` |
+| 立项前验证建议 | `min_validation_actions` |
+| 近一年新品表现 | `new_release_validation` |
+
+`summary_line` 用一句话写本卡的方向结论，例如「合成样本有 1 款采用该组合，其余品类已验证较高流水」。
+新品验证文案说明新品支持或推翻了哪个方向，并链接到对应新品卡。
+
+### 2.2 产品引用与品类核对
+
+机会卡引用的标杆产品与新品，其 `subgenre_id` 必须与矩阵所在行的对应品类一致。不一致即报错。
+
+- `benchmark_products` 为可选结构化字段，格式为 `[{"unified_app_id": "...", "subgenre_id": "..."}]`。
+- 带该字段的卡按冻结名单逐项核对产品 ID 和品类。未知 ID、品类错填或与矩阵该行不一致均报错。
+- 新品沿用 `new_release_validation.linked_new_app_ids`，按同一名单查回 `subgenre_id` 后核对。
+- 缺少 `benchmark_products` 的旧卡按自由文本读取，发现产品或品类冲突时提示人工复核。
 
 ### `full` 的 `opportunities.json` 结构示例
+
+尖括号内均为待回填项。生产数据的 `merge_count` 由对应矩阵行回填为整数，`metric_refs` 使用冻结数据中的实际引用。
 
 ```json
 {
@@ -55,18 +107,21 @@
     {
       "opp_id": "opp_01",
       "title": "古董修复 × 治愈手绘",
-      "opportunity_type": "呈现差异",
+      "opportunity_type": "画风差异",
       "target_tag_ids": ["antique_restoration", "cozy_handdrawn"],
-      "summary_line": "合成打标池有 1 款产品采用古董修复与治愈手绘的组合。",
+      "summary_line": "合成样本有 1 款采用该组合，其余品类已验证较高流水",
+      "benchmark_products": [
+        {"unified_app_id": "<标杆产品 ID>", "subgenre_id": "<矩阵该行对应品类 ID>"}
+      ],
       "supply_gap_metrics": {
-        "merge_count": 1,
-        "benchmark_summary": "示例：对比合成打标池与其他已核验品类中该组合的命中情况",
+        "merge_count": "<合成列实际款数>",
+        "benchmark_summary": "对照四品类样本中同时采用该题材与画风的产品",
         "metric_refs": [
           {
             "label": "标杆产品近6月ST净收入",
             "result": "market",
             "json_pointer": "/totals/0",
-            "match": {"entity_id": "actual_app_id", "metric": "revenue"},
+            "match": {"entity_id": "<标杆产品 ID>", "metric": "revenue"},
             "digits": 2,
             "divisor": 1000000,
             "suffix": "M USD"
@@ -99,6 +154,13 @@
 ---
 
 ## 三、影视剧情借鉴（`research/data/film_refs.json`）
+
+### P5 影视开关
+
+`enable_film_refs` 默认关闭，`pilot` 与 `full` 均适用。
+关闭时跳过选片，不产出 `film_refs.json`，`stage3_done` 不强检该文件。
+开启后按 3.1 的地域与数量规则选片，并按 3.2 和 3.3 核验来源与格式。
+成稿中的影视锚点显示中文片名，链接指向相应影视卡。
 
 ### 3.1 选片地域与数量规则
 - **`pilot`** 按命中产品数降序取前两个高频现状标签，每个标签配一部欧美剧影，共 **两部**。卡片挂接对应标签，带灰标「高频现状对照·非立项推荐」，可省略机会卡挂钩。
@@ -157,7 +219,7 @@
 
 ## 四、Stage 3 完成检查
 
-三份 JSON 落盘后执行确定性阶段收口命令（校验 `supply_matrix.json`、`opportunities.json`、`film_refs.json` 三份产物，落盘 `research/run_state.json`、`research/handoff_resume.md`、`research/data/packet_manifest.json` 三件套并将状态更新为 `stage3_done`；非停点阶段严禁生成 `handoff_questions.md`）：
+阶段产物落盘后执行收口命令。命令校验 `supply_matrix.json` 与 `opportunities.json`，开启影视参考时再校验 `film_refs.json`。通过后写入 `research/run_state.json`、`research/handoff_resume.md` 与 `research/data/packet_manifest.json`，将状态更新为 `stage3_done`。非停点阶段跳过 `handoff_questions.md`。
 
 ```text
 python -B <Skill目录>/scripts/data_pipeline.py checkpoint --out-dir <报告目录> --stage stage3_done

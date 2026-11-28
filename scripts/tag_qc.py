@@ -7,19 +7,22 @@ from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import json
 from pathlib import Path
 import random
 import re
 import sys
+from tempfile import NamedTemporaryFile
+
+sys.dont_write_bytecode = True
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_ROOT = SCRIPT_DIR.parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from common import read, write
+from common import digest, read, write
 
 
 NARRATIVE_AXIS = "narrative_motif"
@@ -27,7 +30,7 @@ INTENSITY_AXIS = "narrative_intensity"
 OFFICIAL_MORPHEMES = ("复建", "复耕", "选装", "物业", "镇区", "影都", "复苏", "矩阵", "体系")
 COMPOUND_LABEL_RE = re.compile(r"[/／、()（）\[\]［］【】或]")
 NEXT_ACTIONS = {
-    "validate-vocab": "按 errors 修改 --vocab 中的词条、说明或豁免，若指向草稿则修改 --draft-md。改完重新运行本次 tag_qc.py validate-vocab 命令。",
+    "validate-vocab": "按 errors 修订 --vocab，或核对 --roster、--pass1 与 --gaps 指向的名单、逐图记录和补图记录，再运行 validate-vocab。",
     "validate-tags": "按 errors 核对标签、证据和呈现判定单元，补齐所需字段后重新运行 tag_qc.py validate-tags。",
     "evaluate": "按 errors 核对 --blind 的协议披露、模型记录与样本，或按报告阈值复核 --tags 与 --blind。改完重新运行本次 tag_qc.py evaluate 命令。",
     "finalize": "按 errors 补齐 --adjudications 的正式裁决与叙事证据，若盲测未通过或披露有误则先用 evaluate 重出 --qc。改完重新运行本次 tag_qc.py finalize 命令。",
@@ -111,6 +114,29 @@ def _narrative_evidence_errors(prod, intensity, sources, cfg):
     return errors
 
 
+def _narrative_copy_errors(prod, tags):
+    evidence = prod.get("narrative_evidence")
+    if not isinstance(evidence, list):
+        return []
+
+    presentation_quotes = {
+        "".join(quote.split()).casefold()
+        for tag in tags
+        if tag.get("slot") == "presentation"
+        and isinstance(quote := tag.get("evidence_quote"), str)
+        and quote.strip()
+    }
+    errors = []
+    uid = prod["unified_app_id"]
+    for index, item in enumerate(evidence):
+        quote = item.get("evidence_quote") if isinstance(item, dict) else None
+        if isinstance(quote, str) and "".join(quote.split()).casefold() in presentation_quotes:
+            errors.append(
+                f"{uid}: narrative_evidence[{index}].evidence_quote duplicates presentation evidence_quote"
+            )
+    return errors
+
+
 def load_blacklist_cfg() -> dict:
     return read(SKILL_ROOT / "configs/tag_blacklist.json")
 
@@ -182,20 +208,104 @@ def _presentation_vocab_errors(item, forbidden_terms, dimension_tokens, dimensio
     return errors
 
 
-def _draft_vocab_errors(draft, warning_keys):
+def _irreducibility_errors(tid, note, hits):
+    if not isinstance(note, dict):
+        return [f"{tid}: irreducibility_note requires groups and products arrays"]
     errors = []
-    markers = ("（待复核）", "（待补证）", "(待复核)", "(待补证)")
-    for marker in markers:
-        if marker in draft:
-            errors.append(f"draft Markdown contains illegal enum annotation {marker!r}")
-    lines = draft.casefold().splitlines()
-    for tid, warning_type in warning_keys:
-        id_re = re.compile(rf"(?<![a-z0-9_]){re.escape(tid.casefold())}(?![a-z0-9_])")
-        if not any(id_re.search(line) and warning_type.casefold() in line for line in lines):
-            errors.append(f"draft Markdown missing warning for {tid}: {warning_type}")
-    if "passed_no_waiver" in draft and not re.search(r"irreducibility_note|不可(?:再|细)?分|无法再分", draft):
-        errors.append("draft Markdown uses passed_no_waiver without an irreducibility note (不可再分说明)")
+    placeholders = re.compile(r"同上|如上|同前|见上|\b(?:same\s+as\s+above|ditto)\b", re.IGNORECASE)
+    for level in ("groups", "products"):
+        rows = note.get(level)
+        label = f"{tid}: irreducibility_note.{level}"
+        if not isinstance(rows, list) or not rows or any(not isinstance(row, dict) for row in rows):
+            errors.append(f"{label} must be a nonempty array of objects")
+            continue
+        covered = set()
+        for row in rows:
+            placeholder = placeholders.search(json.dumps(row, ensure_ascii=False))
+            if placeholder:
+                errors.append(f"{label} contains placeholder {placeholder[0]!r}")
+            if level == "groups":
+                members = row.get("hit_app_ids")
+                if not isinstance(members, list) or not members:
+                    errors.append(f"{label} requires hit_app_ids for each group")
+                    continue
+            else:
+                members = [row.get("unified_app_id")]
+            covered.update(str(uid) for uid in members)
+        if covered != hits:
+            errors.append(f"{label} must cover hit_app_ids: missing {sorted(hits - covered)}, extra {sorted(covered - hits)}")
     return errors
+
+
+def _valid_screenshot_review(review, file_count, kinds):
+    return isinstance(review, list) and len(review) == file_count and all(
+        isinstance(shot, dict) and type(shot.get("screenshot_index")) is int
+        and shot["screenshot_index"] == index and shot.get("image_kind") in kinds
+        for index, shot in enumerate(review, 1)
+    )
+
+
+def _vocab_pass1_audit(args, roster, pass1, visual_policy, errors):
+    reviews, units = {}, {}
+    for row in _extract_product_list(pass1):
+        uid = str(row["unified_app_id"])
+        if uid in reviews or uid not in roster:
+            errors.append(f"{uid}: duplicate Pass 1 record or product outside --roster")
+        reviews[uid] = row
+    totals, missing_halves, zero_gameplay = Counter(), defaultdict(set), set()
+    kinds = visual_policy["image_kind_enum"]
+    for uid, product in roster.items():
+        genre = product["primary_subgenre"]
+        totals[genre] += 1
+        row = reviews.get(uid)
+        if row is None:
+            errors.append(f"{uid}: --pass1 is missing screenshots_reviewed and screenshot_review")
+            continue
+        files = product.get("screenshot_files", [])
+        if row.get("screenshots_reviewed") != files or len(set(files)) != len(files):
+            errors.append(f"{uid}: screenshots_reviewed must match all roster screenshot_files in order without duplicates")
+        review = row.get("screenshot_review")
+        if not _valid_screenshot_review(review, len(files), kinds):
+            errors.append(f"{uid}: screenshot_review must list indices 1 through {len(files)} in order with a valid image_kind")
+            continue
+        if all(shot["image_kind"] in visual_policy["forbidden_presentation_image_kinds"] for shot in review):
+            zero_gameplay.add(uid)
+            units[uid] = "promo_or_portrait_only"
+            continue
+        unit = row.get("visual_unit") or next(
+            (tag["visual_unit"] for tag in row.get("free_tags", [])
+             if tag.get("axis") == "presentation" and tag.get("visual_unit")),
+            None,
+        )
+        if unit not in visual_policy["controlled_enum"] or unit == "promo_or_portrait_only":
+            errors.append(f"{uid}: --pass1 requires a gameplay visual_unit for reviewed gameplay")
+        units[uid] = unit
+        if genre in ("merge", "match_3") and unit in ("gameplay_board", "main_scene"):
+            missing_halves[genre].add(uid)
+
+    _check_l3_supplements(args, totals, missing_halves, errors)
+    return reviews, units, zero_gameplay, {
+        genre: {"roster_count": totals[genre], "L3": len(missing_halves[genre]),
+                "missing_half_app_ids": sorted(missing_halves[genre])}
+        for genre in ("merge", "match_3") if totals[genre]
+    }
+
+
+def _check_l3_supplements(args, totals, missing_halves, errors):
+    over_limit = {genre: ids for genre, ids in missing_halves.items() if len(ids) * 10 > totals[genre] * 3}
+    if over_limit:
+        gap_path = Path(args.gaps) if args.gaps else Path(args.roster).with_name("gap_register.json")
+        gap_data = read(gap_path) if args.gaps or gap_path.is_file() else {"gaps": []}
+        gaps = gap_data["gaps"] if isinstance(gap_data, dict) else gap_data
+        supplemented = {
+            str(gap.get("unified_app_id")) for gap in gaps
+            if gap.get("impact_level") == "L3" and _nonempty(gap.get("supplement_source"))
+            and _nonempty(gap.get("supplement_result"))
+        }
+        for genre, ids in sorted(over_limit.items()):
+            missing = sorted(ids - supplemented)
+            if missing:
+                errors.append(f"{genre}: L3 缺半边 {len(ids)}/{totals[genre]}，缺补图记录 ({gap_path}): {', '.join(missing)}")
 
 
 def _valid_screenshot_index(value):
@@ -207,6 +317,30 @@ def _visual_confidence_error(tag, uid, confidence, cfg):
     unit = tag.get("visual_unit")
     if unit in cfg["visual_unit_policy"]["forbidden_high_conf_units"] and confidence != "low":
         return f"{uid}: presentation visual_unit {unit} requires confidence=low"
+    return None
+
+
+def _promo_presentation_error(tag, uid, confidence, review, visual_policy):
+    screenshot_index = tag.get("screenshot_index")
+    indices = screenshot_index if isinstance(screenshot_index, list) else [screenshot_index]
+    if review:
+        reviewed_indices = {shot["screenshot_index"] for shot in review if type(shot.get("screenshot_index")) is int}
+        if not _valid_screenshot_index(screenshot_index) or any(index not in reviewed_indices for index in indices):
+            return f"{uid}/{tag.get('tag_id')}: presentation screenshot_index {indices} outside screenshot_review"
+    if tag.get("visual_unit") == "promo_or_portrait_only" and confidence == "low":
+        return None
+
+    forbidden_kinds = visual_policy["forbidden_presentation_image_kinds"]
+    forbidden_indices = [
+        shot["screenshot_index"]
+        for shot in review
+        if shot.get("image_kind") in forbidden_kinds
+        and type(shot.get("screenshot_index")) is int
+        and shot["screenshot_index"] in indices
+    ]
+    if forbidden_indices or tag.get("image_kind") in forbidden_kinds:
+        indices = forbidden_indices or indices
+        return f"{uid}/{tag.get('tag_id')}: presentation screenshot_index {indices} uses promo_only evidence"
     return None
 
 
@@ -225,7 +359,7 @@ def _protocol_disclosure_error(disclosure, record, protocol):
     return None
 
 
-def cmd_validate_vocab(args) -> int:
+def _validate_vocab(args):
     cfg = load_blacklist_cfg()
     mode_cfg = cfg["mode_thresholds"][args.preset]
     fmt = cfg["tag_format"]
@@ -239,15 +373,31 @@ def cmd_validate_vocab(args) -> int:
     banned = build_banned_set(cfg)
     id_re = re.compile(fmt["tag_id_regex"])
 
-    vocab_raw = read(Path(args.vocab).resolve())
+    vocab_path = Path(args.vocab).resolve()
+    vocab_raw = read(vocab_path)
     entries = _extract_vocab_entries(vocab_raw)
     metadata = vocab_raw if isinstance(vocab_raw, dict) else {}
     errors, warnings = [], []
-    warning_keys = []
+    warnings_structured = []
 
     def warn(tid, warning_type, message=None):
         warnings.append(f"{tid}: {message or warning_type}")
-        warning_keys.append((tid, warning_type))
+        warnings_structured.append({"tag_id": tid, "warning_type": warning_type, "message": message or warning_type})
+
+    roster_bytes = Path(args.roster).read_bytes() if args.roster else None
+    roster_doc = json.loads(roster_bytes.decode("utf-8-sig")) if args.roster else None
+    roster = {str(row["unified_app_id"]): row for row in _extract_product_list(roster_doc)} if args.roster else {}
+    if args.pass1 and not args.roster:
+        errors.append("--pass1 requires --roster for screenshot coverage")
+    zero_gameplay, l3_by_subgenre = set(), {}
+    reviews, units = {}, {}
+    if args.pass1 and args.roster:
+        if not isinstance(vocab_raw, dict):
+            errors.append("--vocab must be an object to write script_gate_receipt")
+        pass1_bytes = Path(args.pass1).read_bytes()
+        reviews, units, zero_gameplay, l3_by_subgenre = _vocab_pass1_audit(
+            args, roster, json.loads(pass1_bytes.decode("utf-8-sig")), cfg["visual_unit_policy"], errors,
+        )
 
     policy = cfg["presentation_policy"]
     dimension_tokens = {token.casefold() for token in policy["forbid_dimension_tokens_in_label_or_id"]}
@@ -283,6 +433,8 @@ def cmd_validate_vocab(args) -> int:
         if not zh:
             errors.append(f"{tid}: missing label_zh")
         else:
+            if len(zh) < fmt["label_zh_min_chars"]:
+                errors.append(f"{tid}: label_zh '{zh}' requires at least {fmt['label_zh_min_chars']} characters")
             if len(zh) > int(fmt["label_zh_hard_max_chars"]):
                 errors.append(f"{tid}: label_zh '{zh}' exceeds hard max {fmt['label_zh_hard_max_chars']} chars")
             elif len(zh) > int(fmt["label_zh_recommended_max_chars"]):
@@ -310,16 +462,45 @@ def cmd_validate_vocab(args) -> int:
         if axis == NARRATIVE_AXIS and zh not in cfg[NARRATIVE_AXIS]["controlled_enum"]:
             errors.append(f"{tid}: invalid narrative_motif '{zh}'")
         hit_ids = item.get("hit_app_ids", [])
+        hits = set()
         if not isinstance(hit_ids, list):
             errors.append(f"{tid}: hit_app_ids must be an array")
         else:
             hits = {str(uid).strip() for uid in hit_ids if uid is not None and str(uid).strip()}
             hits_by_id[tid] = hits
+            if axis in axes:
+                if len(hits) != len(hit_ids):
+                    errors.append(f"{tid}: {axis} hit_app_ids contains duplicate or empty IDs")
+                for uid in sorted(hits & hits_by_axis[axis]):
+                    errors.append(f"{tid}: {axis} hit_app_ids overlap for {uid}")
+            if args.roster:
+                for uid in sorted(hits - roster.keys()):
+                    errors.append(f"{tid}: {axis} hit_app_ids contains {uid} outside --roster")
             hits_by_axis[axis].update(hits)
             if axis in axes and not hits:
                 errors.append(f"{tid}: hit_app_ids must contain at least one app ID")
             if len(hits) == 1 and item.get("emerging") is not True:
                 warn(tid, "one hit without emerging=true")
+        if item.get("emerging") is True:
+            if not args.roster:
+                errors.append(f"{tid}: emerging=true requires --roster")
+            elif args.preset == "full" and len(hits) >= cfg["emerging_policy"]["revert_to_false_on_full_hits_min"]:
+                errors.append(f"{tid}: emerging must be false in full after {len(hits)} hits")
+            elif len(hits) != 1:
+                errors.append(f"{tid}: emerging=true requires exactly one hit")
+            else:
+                uid = next(iter(hits))
+                app = roster.get(uid, {})
+                window = (roster_doc.get("new_release_window") or {}) if isinstance(roster_doc, dict) else {}
+                try:
+                    start, end, launch = (date.fromisoformat(value) for value in (
+                        window.get("start"), window.get("end"), app.get("effective_launch_date")
+                    ))
+                except (TypeError, ValueError):
+                    errors.append(f"{tid}: emerging hit {uid} requires an effective_launch_date and new_release_window dates")
+                else:
+                    if app.get("is_new_release") is not True or not start <= launch <= end:
+                        errors.append(f"{tid}: emerging hit {uid} must be a verified new release within new_release_window")
         if fmt.get("require_definition", True) and not str(item.get("definition") or "").strip():
             errors.append(f"{tid}: missing definition")
         if fmt.get("require_include_and_exclude_examples", True):
@@ -329,6 +510,16 @@ def cmd_validate_vocab(args) -> int:
                 errors.append(f"{tid}: missing include_examples")
             if not exc or (isinstance(exc, list) and not any(str(x).strip() for x in exc)):
                 errors.append(f"{tid}: missing exclude_examples")
+        for field in ("include_examples", "exclude_examples"):
+            examples = item.get(field) or []
+            if not isinstance(examples, list):
+                errors.append(f"{tid}: {field} must be an array")
+                continue
+            for example in examples:
+                uid = example.get("unified_app_id") if isinstance(example, dict) else None
+                in_hits = uid is not None and str(uid) in hits
+                if in_hits != (field == "include_examples"):
+                    errors.append(f"{tid}: {field} unified_app_id {uid!r} conflicts with hit_app_ids")
 
         for field_name, val in (("tag_id", tid), ("label_zh", zh), ("label_en", en)):
             normalized = normalize_term(val)
@@ -345,38 +536,51 @@ def cmd_validate_vocab(args) -> int:
         if matched:
             warn(tid, "official morphemes in label_zh", f"official morphemes in label_zh: {'、'.join(matched)}")
 
+    if args.roster:
+        for axis in ("theme_primary", "presentation"):
+            for uid in sorted(roster.keys() - hits_by_axis[axis]):
+                errors.append(f"{axis} coverage missing roster product {uid}")
+    hits_by_axis["presentation"].difference_update(zero_gameplay)
+    concentration = cfg["concentration_policy"]
     presentation_max_share = 0.0
     concentration_gate_status = "passed"
     concentration_statuses = (
         "passed", "passed_with_irreducibility_note", "passed_with_concentration_waiver",
-        "warning_missing_irreducibility_note", "failed_missing_concentration_waiver",
+        "failed_irreducibility_note", "failed_missing_concentration_waiver",
     )
     for tid, item in entry_map.items():
         axis = item.get("axis")
-        hits = len(hits_by_id.get(tid, set()))
+        if axis not in concentration["axes"]:
+            continue
+        hit_ids = hits_by_id.get(tid, set())
+        hits = len(hit_ids & hits_by_axis[axis])
         axis_total = len(hits_by_axis[axis])
         share = hits / axis_total if axis_total else 0.0
-        warning_threshold = policy["max_share_warning"] if axis == "presentation" else 0.40
-        if axis in axes and share > warning_threshold:
-            warning_type = f"{axis} hit share"
-            warn(tid, warning_type, f"{warning_type} {hits}/{axis_total} ({share:.1%}) exceeds {warning_threshold:.0%}")
-        if axis != "presentation":
+        if axis == "presentation":
+            presentation_max_share = max(presentation_max_share, share)
+        warning_threshold = policy["max_share_warning"]
+        if share <= warning_threshold:
             continue
-        presentation_max_share = max(presentation_max_share, share)
+        share_label = f"{axis} 单个标签占比 {hits}/{axis_total} ({share:.1%})"
+        eligible = hits >= concentration["min_hits"] or axis_total >= concentration["min_axis_denominator"]
+        if not eligible:
+            warn(tid, "small_denominator", f"{share_label}，小分母，未达集中度核验门槛")
+            continue
+        warn(tid, f"{axis} hit share", f"{share_label} 超过 {warning_threshold:.0%}")
+        note = item.get("irreducibility_note")
+        if note is None:
+            note_errors = [f"{tid}: {share_label}，缺少 irreducibility_note（两层不可再分表）"]
+        else:
+            note_errors = _irreducibility_errors(tid, note, hit_ids)
+        errors.extend(note_errors)
+        gate_status = "failed_irreducibility_note" if note_errors else "passed_with_irreducibility_note"
         if share > policy["max_share_hard_block_without_waiver"]:
             if any(_nonempty(record.get("concentration_waiver")) for record in (item, metadata)):
-                gate_status = "passed_with_concentration_waiver"
+                if not note_errors:
+                    gate_status = "passed_with_concentration_waiver"
             else:
-                errors.append(f"{tid}: presentation hit share {hits}/{axis_total} ({share:.1%}) requires concentration_waiver")
+                errors.append(f"{tid}: {share_label} 须有人工 concentration_waiver")
                 gate_status = "failed_missing_concentration_waiver"
-        elif share > warning_threshold:
-            if any(_nonempty(record.get(key)) for record in (item, metadata) for key in ("irreducibility_note", "signoff_note")):
-                gate_status = "passed_with_irreducibility_note"
-            else:
-                warn(tid, "warning_missing_irreducibility_note", "warning_missing_irreducibility_note (add irreducibility_note or signoff_note)")
-                gate_status = "warning_missing_irreducibility_note"
-        else:
-            gate_status = "passed"
         concentration_gate_status = max(concentration_gate_status, gate_status, key=concentration_statuses.index)
 
     fusion_count = sum(item.get("axis") == "fusion_secondary" for item in entries)
@@ -396,9 +600,21 @@ def cmd_validate_vocab(args) -> int:
             elif entry_map[ptid].get("axis") != pitem.get("axis"):
                 errors.append(f"frozen prior tag_id axis changed: {ptid}")
 
-    if args.draft_md:
-        draft = Path(args.draft_md).read_text(encoding="utf-8-sig")
-        errors.extend(_draft_vocab_errors(draft, warning_keys))
+    if not errors and args.roster and args.pass1:
+        unsigned = {key: value for key, value in vocab_raw.items() if key != "script_gate_receipt"}
+        canonical = json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        vocab_raw["script_gate_receipt"] = {
+            "script_version": "v0.2.0",
+            "command": args.command,
+            "exit_code": 0,
+            "checked_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "input_sha256": {
+                "vocab": digest(canonical.encode("utf-8")),
+                "roster": digest(roster_bytes),
+                "pass1": digest(pass1_bytes),
+            },
+        }
+        write(vocab_path, vocab_raw)
 
     result = {
         "status": "passed" if not errors else "failed",
@@ -410,11 +626,237 @@ def cmd_validate_vocab(args) -> int:
         "hit_counts": {tid: len(hits) for tid, hits in hits_by_id.items()},
         "errors": errors,
         "warnings": warnings,
+        "warnings_structured": warnings_structured,
+        "l3_by_subgenre": l3_by_subgenre,
     }
     if errors:
-        result["next_action"] = NEXT_ACTIONS[args.command]
+        result["next_action"] = NEXT_ACTIONS["validate-vocab"]
+    return result, (vocab_raw, roster, reviews, units, hits_by_id, hits_by_axis, cfg)
+
+
+def cmd_validate_vocab(args) -> int:
+    result, _ = _validate_vocab(args)
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0 if not errors else 2
+    return 2 if result["errors"] else 0
+
+
+def _signoff_diff(previous, entries, hits_by_id):
+    old = {item["tag_id"]: item for item in _extract_vocab_entries(previous)}
+    removed = old.keys() - entries.keys()
+    merged = defaultdict(list)
+    for tid in sorted(removed):
+        hits = {str(uid).strip() for uid in old[tid].get("hit_app_ids", [])}
+        targets = [target for target, item in entries.items()
+                   if hits and hits <= hits_by_id[target] and old[tid]["axis"] == item["axis"]]
+        if len(targets) == 1:
+            merged[targets[0]].append(tid)
+    merged = {target: sources for target, sources in merged.items() if target in old or len(sources) > 1}
+    absorbed = {tid for sources in merged.values() for tid in sources}
+    rows = [("增", tid, entries[tid]["label_zh"]) for tid in sorted(entries.keys() - old.keys() - merged.keys())]
+    rows.extend(("删", tid, old[tid]["label_zh"]) for tid in sorted(removed - absorbed))
+    for tid in sorted(old.keys() & entries.keys()):
+        before, after = old[tid], entries[tid]
+        fields = sorted(field for field in before.keys() | after.keys()
+                        if field != "hit_app_ids" and before.get(field) != after.get(field))
+        old_hits = {str(uid).strip() for uid in before.get("hit_app_ids", [])}
+        added, dropped = sorted(hits_by_id[tid] - old_hits), sorted(old_hits - hits_by_id[tid])
+        if fields or added or dropped:
+            rows.append(("改", tid, f"{before['label_zh']} → {after['label_zh']}。"
+                         f"变更字段 {'、'.join(fields) or '—'}。新增命中 {', '.join(added) or '—'}，"
+                         f"移除命中 {', '.join(dropped) or '—'}"))
+    rows.extend(("并", target, f"{', '.join(merged[target])} → {target}（按同轴命中归并推定）")
+                for target in sorted(merged))
+    return rows
+
+
+def _signoff_table(title, headers, rows, markdown=False):
+    from report_view import E
+
+    if markdown:
+        def line(values):
+            return "| " + " | ".join(E(value).replace("|", "&#124;").replace("\n", " / ") for value in values) + " |\n"
+        return f"### {title}\n\n" + line(headers) + line(["---"] * len(headers)) + "".join(map(line, rows)) + "\n"
+
+    def row(tag, values):
+        return "<tr>" + "".join(f"<{tag}>{E(value).replace(chr(10), '<br>')}</{tag}>" for value in values) + "</tr>"
+    return (f'<div class="table-wrap"><table class="data-table"><caption>{title}</caption>'
+            f'<thead>{row("th", headers)}</thead><tbody>{"".join(row("td", values) for values in rows)}</tbody></table></div>')
+
+
+def _signoff_sample_ids(roster, units, l3_ids, changed_ids):
+    ids = sorted(roster, key=lambda uid: (roster[uid].get("subgenre_rank") or float("inf"), uid))
+    priorities = [ids[0]] if ids else []
+    for candidates in ({uid for uid in ids if roster[uid].get("is_boundary_seat")},
+                       {uid for uid in ids if units[uid] == "promo_or_portrait_only"} | l3_ids, changed_ids):
+        candidate = next((uid for uid in ids if uid in candidates and uid not in priorities), None)
+        if candidate is not None:
+            priorities.append(candidate)
+    return list(dict.fromkeys(priorities + ids))[:5]
+
+
+def _write_signoff(path, content):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    staged = NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False)
+    temp_path = Path(staged.name)
+    try:
+        with staged:
+            staged.write(content)
+        temp_path.replace(path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def cmd_render_signoff(args) -> int:
+    from report_view import E, STYLE
+
+    draft = Path(args.vocab).resolve()
+    output_dir = draft.parents[2] if len(draft.parents) > 2 else draft.parent
+    output = Path(args.output).resolve() if args.output else output_dir / "tag_vocab_signoff.html"
+    summary_path = Path(args.summary_md).resolve() if args.summary_md else draft.with_suffix(".md")
+    gap_path = Path(args.gaps).resolve() if args.gaps else Path(args.roster).resolve().with_name("gap_register.json")
+    inputs = {Path(path).resolve() for path in (draft, args.roster, args.pass1, args.prior_vocab, args.prev_vocab, gap_path) if path}
+    if output == summary_path or {output, summary_path} & inputs:
+        raise ValueError("signoff outputs must be distinct from each other and from the inputs")
+
+    result, (vocab, roster, reviews, units, hits_by_id, hits_by_axis, cfg) = _validate_vocab(args)
+    if result["errors"]:
+        try:
+            output.unlink(missing_ok=True)
+        finally:
+            summary_path.unlink(missing_ok=True)
+        print(json.dumps(result, ensure_ascii=False))
+        return 2
+
+    receipt = vocab["script_gate_receipt"]
+    hashes = {"draft_vocab_sha256": digest(draft.read_bytes()), "roster_sha256": receipt["input_sha256"]["roster"],
+              "pass1_sha256": receipt["input_sha256"]["pass1"]}
+    entries = {item["tag_id"]: item for item in _extract_vocab_entries(vocab)}
+    diff = _signoff_diff(read(args.prev_vocab), entries, hits_by_id) if args.prev_vocab else []
+    diff_html = ('<section class="dash-section" id="changes"><h2>轮次 diff</h2>'
+                 + (_signoff_table("词条变化", ("变化", "tag_id", "说明"), diff) if diff else "<p>词条无变化。</p>")
+                 + "</section>") if args.prev_vocab else ""
+    changed_ids = {uid for _, tid, _ in diff for uid in hits_by_id.get(tid, ())}
+    axes = {"theme_primary": "主题材", "presentation": "呈现", "fusion_secondary": "融合"}
+    domains = {domain["id"]: domain["label_zh"] for domain in cfg["primary_domains"]}
+    axis_tables, matches = [], defaultdict(dict)
+    concentration = {"groups": [], "products": []}
+    for axis, label in axes.items():
+        rows, denominator = [], len(hits_by_axis[axis])
+        for tid, item in sorted(entries.items()):
+            if item["axis"] != axis:
+                continue
+            hits = hits_by_id[tid] & hits_by_axis[axis]
+            primary = domains.get(item.get("parent_domain"), "") if axis == "theme_primary" else ""
+            share = f"{len(hits) / denominator:.1%}" if denominator else "—"
+            examples = [json.dumps(item.get(field, []), ensure_ascii=False) for field in ("include_examples", "exclude_examples")]
+            rows.append((tid, primary, item["label_zh"], item.get("definition", ""), len(hits), share,
+                         *examples, str(item.get("emerging") is True).lower()))
+            for uid in hits:
+                matches[uid][axis] = f"{primary} › {item['label_zh']}" if primary else item["label_zh"]
+            for level, records in concentration.items():
+                note = item.get("irreducibility_note") or {}
+                records.extend((tid, json.dumps(row, ensure_ascii=False)) for row in note.get(level, []))
+        axis_tables.append((f"{label}（占比分母 {denominator} 款）",
+                            ("tag_id", "一级", "短词", "定义", "命中数", "占比", "纳入例", "排除例", "emerging"), rows))
+
+    dispositions = {"exceeds recommended": "保留当前短词或缩短词名", "one hit without emerging=true": "核对实证后决定保留或归入近义标签",
+                    "official morphemes in label_zh": "核对词名是否需要改为具体对象", "small_denominator": "记录小分母，扩样后复核"}
+    warnings = result["warnings_structured"]
+    warning_table = ("告警", ("词条、告警原文与处置",), [
+        (f"{w['tag_id']}｜{w['message']}\n处置  {dispositions.get(w['warning_type'], '复核两层集中度说明，裁定保留或拆分标签')}",)
+        for w in warnings
+    ])
+    l3 = result["l3_by_subgenre"]
+    l3_ids = {uid for info in l3.values() for uid in info["missing_half_app_ids"]}
+    units_by_genre = defaultdict(Counter)
+    for uid, unit in units.items():
+        units_by_genre[roster[uid]["primary_subgenre"]][unit] += 1
+    gap_data = read(gap_path) if args.gaps or gap_path.is_file() else []
+    gaps = gap_data["gaps"] if isinstance(gap_data, dict) else gap_data
+    enum = cfg["visual_unit_policy"]["controlled_enum"]
+    unit_rows = [(genre, *(counts[unit] for unit in enum),
+                  f"{l3[genre]['L3']}/{l3[genre]['roster_count']} "
+                  + ", ".join(l3[genre]["missing_half_app_ids"]) if genre in l3 else "—",
+                  ", ".join(sorted(uid for uid in roster if roster[uid]["primary_subgenre"] == genre
+                                   and units[uid] == "promo_or_portrait_only")) or "—",
+                  " / ".join(f"{g['unified_app_id']} {g.get('supplement_source', '')} {g.get('supplement_result', '')}"
+                             for g in gaps if str(g.get("unified_app_id")) in roster
+                             and roster[str(g["unified_app_id"])]["primary_subgenre"] == genre
+                             and g.get("impact_level") in ("L2", "L3")) or "—")
+                 for genre, counts in sorted(units_by_genre.items())]
+    unit_table = ("判定单元与 L3", ("品类", *enum, "L3 缺半边 ID", "L2 零实机图 ID", "补图来源与结果"), unit_rows)
+    samples = []
+    for uid in _signoff_sample_ids(roster, units, l3_ids, changed_ids):
+        review, tagged = reviews[uid], matches[uid]
+        free_tags = review.get("free_tags", [])
+        presentation_tags = [tag for tag in free_tags if tag.get("axis") == "presentation"]
+        visual_fields = {
+            field: review.get(field) or next((tag[field] for tag in presentation_tags if tag.get(field)), None)
+            for field in ("screenshot_index", "primary_visual_region", "visual_unit_fallback_reason")
+        }
+        evidence = " / ".join(f"{tag.get('evidence_source_id') or tag.get('evidence_type') or 'Pass 1'} {tag['evidence_quote']}"
+                              for tag in free_tags if tag.get("evidence_quote"))
+        samples.append((f"{roster[uid].get('app_name') or uid} · {uid}",
+                        "，".join(f"{label} {tagged.get(axis, '留空（缺合格实机图）' if axis == 'presentation' else '留空（未命中独立循环）')}"
+                                  for axis, label in axes.items()),
+                        f"叙事 {review.get('narrative_intensity') or '未记录'}／{review.get('narrative_motif') or '—'}。"
+                        f"判定单元 {units[uid]}。截图 {visual_fields['screenshot_index'] or '—'}。"
+                        f"观察区域 {visual_fields['primary_visual_region'] or '—'}。"
+                        f"{visual_fields['visual_unit_fallback_reason'] or ''} {evidence or '已阅图源 ' + ', '.join(review['screenshots_reviewed'])}"))
+    coverage = f"融合轴命中 {len(hits_by_axis['fusion_secondary'])}/{len(roster)} 款，缺独立玩法实证的产品可留空。"
+    decisions = [
+        ("词条边界", f"草稿收录 {result['vocab_count']} 词。相近词的纳入边界将决定预标归类。",
+         "沿用当前定义与例子", "指定词条，修改边界后重验", "axes"),
+        ("告警词处置", f"脚本报出 {len(warnings)} 条告警。保留告警词需要结合用词与命中实证。",
+         "按附录逐条确认", "指定告警词，改名或归入近义标签", "warnings"),
+        ("集中标签取舍", f"单个呈现标签占比最高 {result['presentation_max_share']:.1%}。拆分会改变覆盖口径。",
+         "按现有两层说明确认标签粒度", "指定要拆分的标签和划分依据", "concentration"),
+        ("融合覆盖范围", coverage + "新增融合标签需要可复核的独立玩法证据。",
+         "沿用当前覆盖", "指定产品，补独立循环实证后复核", "fusion_zero_audit"),
+    ]
+    cards, decision_md, decision_data = [], [], []
+    for number, (title, reason, default, alternative, anchor) in enumerate(decisions, 1):
+        response = f"第 {number} 项选默认／备选，涉及的词条或依据是……"
+        body = f"{reason} 默认 {default}。备选 {alternative}。可回复「{response}」。"
+        cards.append(f'<article class="vocab-card"><h3>{number}. {title}</h3><p>{body} <a href="#{anchor}">查看依据</a></p></article>')
+        decision_md.append(f"{number}. **{title}**。{body}\n")
+        decision_data.append({"number": number, "title": title, "options": {"default": default, "alternative": alternative},
+                              "anchor": anchor})
+    count = result["fusion_candidates_retained"]
+    audit = (f"本轮保留 {count} 词，未触发归零。" if count else
+             json.dumps(vocab.get("fusion_zero_audit") or vocab["fusion_disposition"], ensure_ascii=False, indent=2))
+    meta = "".join(f'<meta name="{name}" content="{value}">\n' for name, value in hashes.items())
+    hash_lines = "\n".join(f"{name} {value}" for name, value in hashes.items())
+    sample_cards = "".join(f'<article class="vocab-card" data-sample-card><h3>{E(title)}</h3><p>{E(tags)}</p><p>{E(source)}</p></article>'
+                           for title, tags, source in samples)
+    tables = "".join(f"<h3>{title}</h3>{_signoff_table(title, headers, rows)}" for title, headers, rows in axis_tables)
+    groups = _signoff_table("集中度分组论证", ("tag_id", "判据与依据"), concentration["groups"])
+    products = _signoff_table("集中度逐款明细", ("tag_id", "产品与依据"), concentration["products"])
+    html = f"""<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">{meta}<title>词表签字</title><style>{STYLE}</style></head>
+<body><main class="dash-main" style="margin:20px auto;padding:0 12px">
+<header class="dash-section"><h1>词表签字</h1><p>本轮范围 {args.preset} · 名单 {len(roster)} 款 · {coverage}</p>
+{'' if args.prev_vocab else '<p class="muted">首轮无前稿</p>'}
+<p><a href="#script_gate_receipt">查看脚本绿灯回执</a></p><pre>{hash_lines}</pre>
+<details id="script_gate_receipt"><summary>脚本绿灯回执</summary><pre>{E(json.dumps(receipt, ensure_ascii=False, indent=2))}</pre></details></header>
+<section class="dash-section"><h2>决策卡</h2>{''.join(cards)}</section>{diff_html}
+<section class="dash-section"><h2>{len(samples)} 款样例</h2>{sample_cards}</section>
+<section class="dash-section" id="axes"><h2>三轴总览</h2>{tables}</section>
+<details class="dash-section"><summary>附录</summary><h3 id="warnings">告警与处置</h3>{_signoff_table(*warning_table)}
+<h3 id="concentration">两层集中度</h3>{groups}{products}<h3>判定单元与 L3</h3>{_signoff_table(*unit_table)}
+<h3 id="fusion_zero_audit">融合归零审计</h3><pre>{E(audit)}</pre></details></main></body></html>"""
+    markdown = (f"# 词表签字 · {args.preset}\n\n{coverage}\n\n" + "\n".join(f"- {line}" for line in hash_lines.splitlines())
+                + "\n\n## 三轴总览\n\n" + "".join(_signoff_table(*table, markdown=True) for table in axis_tables)
+                + "## 告警\n\n" + _signoff_table(*warning_table, markdown=True) + "## 判定单元与 L3\n\n"
+                + _signoff_table(*unit_table, markdown=True) + f"## {len(samples)} 款样例\n\n"
+                + "".join(f"### {E(title)}\n\n{E(tags)}\n\n{E(source)}\n\n" for title, tags, source in samples)
+                + "## 拍板问题\n\n" + "".join(decision_md))
+    html = re.sub(r"localstorage", lambda match: f"&#{ord(match[0][0])};{match[0][1:]}", html, flags=re.I)
+    _write_signoff(summary_path, markdown)
+    _write_signoff(output, html)
+    print(json.dumps({"decision_count": len(decisions), "decisions": decision_data, "warning_count": len(warnings), **hashes,
+                      "output": str(output), "summary_md": str(summary_path)}, ensure_ascii=False))
+    return 0
 
 
 def cmd_validate_tags(args) -> int:
@@ -435,8 +877,13 @@ def cmd_validate_tags(args) -> int:
         raise ValueError("tagging input bundle must contain a sources object")
 
     errors, warnings, low_conf_ids = [], [], []
+    if args.pass1:
+        pass1 = read(Path(args.pass1).resolve())
+        _vocab_pass1_audit(args, roster_map, pass1, visual_policy, errors)
     tagged_uids = set()
     visual_units = Counter()
+    totals = Counter(product.get("primary_subgenre") for product in roster_map.values())
+    missing_halves = defaultdict(set)
     non_mkt_types = set(ev_cfg["non_marketing_evidence_types"])
     valid_ev_types = set(ev_cfg["valid_evidence_types"])
     valid_conf = set(ev_cfg["valid_confidence_levels"])
@@ -465,22 +912,25 @@ def cmd_validate_tags(args) -> int:
             errors.append(str(exc))
         else:
             errors.extend(_narrative_evidence_errors(prod, intensity, sources, cfg))
+        errors.extend(_narrative_copy_errors(prod, raw_tags))
 
-        shots_rev = prod.get("screenshots_reviewed")
-        if shots_rev is None:
-            shots_rev = []
-        if not isinstance(shots_rev, list):
-            errors.append(f"{pname}: screenshots_reviewed must be an array")
-            shots_rev = []
         roster_prod = roster_map.get(uid, {})
         available_shots = roster_prod.get("screenshot_files") or []
-        subgenre = roster_prod.get("primary_subgenre") or prod.get("subgenre_id")
-        preferred_unit = visual_policy["preferred_unit_by_subgenre"].get(subgenre)
-        for shot in shots_rev:
-            if not isinstance(shot, str) or shot not in available_shots:
-                errors.append(f"{pname}: reviewed screenshot {shot!r} not in roster screenshot_files")
-        if ev_cfg.get("presentation_slot_requires_visual_check", True) and available_shots and not shots_rev:
-            errors.append(f"{pname}: screenshots_reviewed is empty while {len(available_shots)} local screenshots exist")
+        genre = roster_prod.get("primary_subgenre")
+        preferred_unit = visual_policy["preferred_unit_by_subgenre"].get(genre or prod.get("subgenre_id"))
+        shots_rev = prod.get("screenshots_reviewed")
+        if shots_rev != available_shots:
+            errors.append(f"{pname}: screenshots_reviewed must match all roster screenshot_files in order")
+        if not isinstance(shots_rev, list):
+            shots_rev = []
+
+        review = prod.get("screenshot_review")
+        if not _valid_screenshot_review(review, len(available_shots), visual_policy["image_kind_enum"]):
+            errors.append(
+                f"{uid}: screenshot_review must list indices 1 through {len(available_shots)} "
+                "in order with a valid image_kind"
+            )
+            review = []
 
         for tag in raw_tags:
             tid = tag.get("tag_id") or tag.get("slot") or ""
@@ -490,9 +940,9 @@ def cmd_validate_tags(args) -> int:
                     errors.append(f"{pname}/{tid}: invalid visual_unit {unit!r}")
                 else:
                     visual_units[unit] += 1
+                    if genre in ("merge", "match_3") and unit in ("gameplay_board", "main_scene"):
+                        missing_halves[genre].add(uid)
                     if preferred_unit is not None and unit != preferred_unit:
-                        if any(shot not in shots_rev for shot in available_shots):
-                            errors.append(f"{pname}/{tid}: fallback visual_unit requires screenshots_reviewed to cover all screenshot_files")
                         fallback_reason = tag.get("visual_unit_fallback_reason")
                         if not isinstance(fallback_reason, str) or not fallback_reason.strip():
                             errors.append(f"{pname}/{tid}: missing visual_unit_fallback_reason")
@@ -504,6 +954,9 @@ def cmd_validate_tags(args) -> int:
                 visual_error = _visual_confidence_error(tag, uid, prod.get("confidence"), cfg)
                 if visual_error:
                     errors.append(visual_error)
+                promo_error = _promo_presentation_error(tag, uid, prod.get("confidence"), review, visual_policy)
+                if promo_error:
+                    errors.append(promo_error)
 
             ev_src = str(tag.get("evidence_source_id") or "").strip()
             if not ev_src:
@@ -571,6 +1024,7 @@ def cmd_validate_tags(args) -> int:
     missing_uids = sorted(set(roster_map.keys()) - tagged_uids)
     for muid in missing_uids:
         errors.append(f"roster product missing tags: {muid} ({roster_map[muid].get('app_name')})")
+    _check_l3_supplements(args, totals, missing_halves, errors)
 
     result = {
         "status": "passed" if not errors else "failed",
@@ -732,6 +1186,13 @@ def cmd_evaluate(args) -> int:
         b_tags = [t for t in _main_tags(bprod) if t.get("slot") in axes and t.get("tag_id")]
         p_visual = next((tag for tag in p_tags if tag["slot"] == "presentation"), {})
         b_visual = next((tag for tag in b_tags if tag["slot"] == "presentation"), {})
+        blind_review = bprod.get("screenshot_review")
+        review = [shot for shot in blind_review if isinstance(shot, dict)] if isinstance(blind_review, list) else []
+        promo_error = _promo_presentation_error(
+            b_visual, uid, bprod.get("confidence"), review, cfg["visual_unit_policy"]
+        )
+        if promo_error:
+            errors.append(f"blind: {promo_error}")
         p_unit = p_visual.get("visual_unit")
         b_unit = b_visual.get("visual_unit")
         visual_match = p_unit == b_unit and p_unit in controlled_enum
@@ -920,6 +1381,57 @@ def _apply_narrative_adjudication(prod, decision, cfg):
                 raise ValueError(f"{uid}: {field} changes narrative_motif without an explicit narrative_motif field")
 
 
+def _check_final_exclusions(prod, tags):
+    exclusions = prod.get("excluded_near_tags")
+    if not isinstance(exclusions, list):
+        return
+    for tag in tags:
+        tid = tag.get("tag_id")
+        if not tid:
+            continue
+        pattern = re.compile(rf"\b{re.escape(tid)}\b", re.ASCII | re.IGNORECASE)
+        for index, entry in enumerate(exclusions):
+            if pattern.search(str(entry)):
+                raise ValueError(
+                    f"{prod['unified_app_id']}: excluded_near_tags[{index}] references final tag_id {tid!r}"
+                )
+
+
+def _check_final_emerging(entries, hits_by_id, preset, roster_path, policy):
+    roster, window = {}, {}
+    if roster_path:
+        roster_doc = read(Path(roster_path).resolve())
+        roster = {str(row["unified_app_id"]): row for row in _extract_product_list(roster_doc)}
+        if isinstance(roster_doc, dict):
+            window = roster_doc.get("new_release_window") or {}
+
+    for entry in entries:
+        if entry.get("emerging") is not True:
+            continue
+        tid = entry["tag_id"]
+        hits = hits_by_id.get(tid, set())
+        if preset == "full" and len(hits) >= policy["revert_to_false_on_full_hits_min"]:
+            raise ValueError(f"{tid}: emerging must be false in full after {len(hits)} final hits")
+        if len(hits) != 1:
+            raise ValueError(f"{tid}: emerging=true requires exactly one final hit, got {len(hits)}")
+        if not roster_path:
+            continue
+        uid = next(iter(hits))
+        app = roster.get(uid, {})
+        if app.get("is_new_release") is not True:
+            raise ValueError(f"{tid}: emerging hit {uid} must be a verified new release in --roster")
+        try:
+            start = date.fromisoformat(window.get("start"))
+            end = date.fromisoformat(window.get("end"))
+            launch = date.fromisoformat(app.get("effective_launch_date"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{tid}: emerging hit {uid} requires an effective_launch_date and new_release_window dates"
+            ) from exc
+        if not start <= launch <= end:
+            raise ValueError(f"{tid}: emerging hit {uid} must be within new_release_window")
+
+
 def cmd_finalize(args) -> int:
     cfg = load_blacklist_cfg()
     vocab_raw = read(Path(args.vocab).resolve())
@@ -987,6 +1499,8 @@ def cmd_finalize(args) -> int:
 
     applied_log = []
     unresolved_low = []
+    hits_by_id = defaultdict(set)
+    axes = cfg["slots"]["axes"]
     for prod in products:
         uid = str(prod["unified_app_id"])
         original_confidence = prod.get("confidence")
@@ -1002,6 +1516,12 @@ def cmd_finalize(args) -> int:
                     if t.get("tag_id") not in vocab_map:
                         raise ValueError(f"adjudication uses unknown tag_id: {t.get('tag_id')}")
                 prod["tags"] = dec["final_tags"]
+            for field in ("excluded_near_tags", "final_excluded_near_tags"):
+                if field in dec:
+                    exclusions = dec[field]
+                    if not isinstance(exclusions, list) or not exclusions:
+                        raise ValueError(f"{uid}: adjudication {field} must be a nonempty array")
+                    prod["excluded_near_tags"] = exclusions
             _apply_narrative_adjudication(prod, dec, cfg)
             intensity = _checked_narrative_intensity(prod, cfg)
             prod["adjudicated_by"] = dec_by
@@ -1028,25 +1548,43 @@ def cmd_finalize(args) -> int:
             unresolved_low.append(uid)
         prod[NARRATIVE_AXIS] = _checked_narrative(prod, cfg[NARRATIVE_AXIS]["controlled_enum"])
         prod["tags"] = _main_tags(prod)
+        final_tags = [tag for tag in prod["tags"] if tag.get("slot") in axes]
+        _check_final_exclusions(prod, final_tags)
+        copy_errors = _narrative_copy_errors(prod, final_tags)
+        if copy_errors:
+            raise ValueError("；".join(copy_errors))
+        for tag in final_tags:
+            hits_by_id[tag.get("tag_id")].add(uid)
+        review = prod.get("screenshot_review")
         for tag in prod["tags"]:
             if tag.get("slot") == "presentation":
                 visual_error = _visual_confidence_error(tag, uid, original_confidence, cfg)
                 if visual_error:
                     raise ValueError(visual_error)
+                if review is not None:
+                    promo_error = _promo_presentation_error(tag, uid, original_confidence, review, cfg["visual_unit_policy"])
+                    if promo_error:
+                        raise ValueError(promo_error)
 
     if len(unresolved_low) > max_unresolved_low:
         raise ValueError(f"unresolved low_confidence products remain ({len(unresolved_low)}): {unresolved_low}")
+    _check_final_emerging(vocab_entries, hits_by_id, preset, args.roster, cfg["emerging_policy"])
+
+    vocab_metadata = vocab_raw if isinstance(vocab_raw, dict) else {}
+    vocab_approval = {
+        "approved_by": vocab_metadata.get("approved_by", "human"),
+        "approved_date": vocab_metadata.get("approved_date", ""),
+        "signoff_note": vocab_metadata.get("signoff_note", ""),
+    }
+    if "script_gate_receipt" in vocab_metadata:
+        vocab_approval["script_gate_receipt"] = vocab_metadata["script_gate_receipt"]
 
     corpus = {
         "schema_version": "1.0.0",
         "status": "verified",
         "preset": preset,
         "finalized_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "vocab_approval": {
-            "approved_by": vocab_raw.get("approved_by", "human") if isinstance(vocab_raw, dict) else "human",
-            "approved_date": vocab_raw.get("approved_date", "") if isinstance(vocab_raw, dict) else "",
-            "signoff_note": vocab_raw.get("signoff_note", "") if isinstance(vocab_raw, dict) else "",
-        },
+        "vocab_approval": vocab_approval,
         "vocab": vocab_entries,
         "products": products,
         "qc_summary": {
@@ -1082,13 +1620,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_vv.add_argument("--vocab", required=True)
     p_vv.add_argument("--preset", choices=("pilot", "full"), required=True)
     p_vv.add_argument("--prior-vocab", default=None, help="Prior pilot vocab JSON to enforce frozen tag_ids")
-    p_vv.add_argument("--draft-md", default=None, help="Draft Markdown signoff page to check against vocab warnings")
+    p_vv.add_argument("--roster", help="Frozen product roster JSON")
+    p_vv.add_argument("--pass1", help="Pass 1 screenshot review JSON")
+    p_vv.add_argument("--gaps", help="Supplement evidence register JSON (defaults to gap_register.json beside --roster)")
+    p_vv.add_argument("--draft-md", default=None, help="Deprecated compatibility option")
     p_vv.set_defaults(func=cmd_validate_vocab)
+
+    p_rs = sub.add_parser("render-signoff", help="Validate vocabulary and render the signoff page and summary")
+    p_rs.add_argument("--vocab", required=True)
+    p_rs.add_argument("--roster", required=True)
+    p_rs.add_argument("--pass1", required=True)
+    p_rs.add_argument("--gaps", help="Supplement evidence register JSON (defaults to gap_register.json beside --roster)")
+    p_rs.add_argument("--preset", choices=("pilot", "full"), required=True)
+    p_rs.add_argument("--output")
+    p_rs.add_argument("--prev-vocab")
+    p_rs.add_argument("--summary-md")
+    p_rs.add_argument("--prior-vocab")
+    p_rs.set_defaults(func=cmd_render_signoff)
 
     p_vt = sub.add_parser("validate-tags", help="Validate Pass 2 tags against slots, vocab and non-marketing evidence rules")
     p_vt.add_argument("--vocab", required=True)
     p_vt.add_argument("--tags", required=True)
     p_vt.add_argument("--roster", required=True)
+    p_vt.add_argument("--pass1", help="Pass 1 screenshot review JSON")
+    p_vt.add_argument("--gaps", help="Supplement evidence register JSON (defaults to gap_register.json beside --roster)")
     p_vt.add_argument("--bundle", required=True)
     p_vt.add_argument("--preset", choices=("pilot", "full"), required=True)
     p_vt.set_defaults(func=cmd_validate_tags)
@@ -1115,6 +1670,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_fn.add_argument("--qc", required=True)
     p_fn.add_argument("--adjudications", default=None)
     p_fn.add_argument("--bundle", default=None, help="Tagging input bundle for adjudicated narrative evidence checks")
+    p_fn.add_argument("--roster", help="Frozen roster for final emerging validation")
     p_fn.add_argument("--output", required=True)
     p_fn.set_defaults(func=cmd_finalize)
     return parser
